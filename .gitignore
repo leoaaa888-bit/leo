@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# TLS 证书 —— 含私钥，绝不上传
+certs/
+
+# 运行时状态 / 日志
+logs/
+port_map.json
+.deps_installed
+
+# PyInstaller 构建产物（可从 control_panel.py 重新打包）
+build/
+dist/
+*.spec
+
+# 自行打包的 exe（保留 adb.exe，其余 exe 排除）
+*.exe
+!adb.exe
+
+# 系统垃圾文件
+Thumbs.db
+Desktop.ini
+.DS_Store

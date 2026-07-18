@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Web-scrcpy">
+  <defs>
+    <linearGradient id="g" x1="96" y1="64" x2="416" y2="448" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4AE892"/>
+      <stop offset="1" stop-color="#2BB86A"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="176" y1="120" x2="336" y2="392" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1A2430"/>
+      <stop offset="1" stop-color="#0B1016"/>
+    </linearGradient>
+  </defs>
+  <!-- App tile -->
+  <rect width="512" height="512" rx="112" fill="#0E1014"/>
+  <!-- Soft glow -->
+  <circle cx="256" cy="248" r="168" fill="#3DDC84" opacity="0.12"/>
+  <!-- Phone body -->
+  <rect x="168" y="88" width="176" height="336" rx="36" fill="url(#g)"/>
+  <rect x="184" y="112" width="144" height="272" rx="18" fill="url(#screen)"/>
+  <!-- Dynamic island -->
+  <rect x="228" y="128" width="56" height="14" rx="7" fill="#0E1014" opacity="0.85"/>
+  <!-- Signal bars / live pulse -->
+  <rect x="214" y="214" width="14" height="36" rx="4" fill="#3DDC84"/>
+  <rect x="238" y="198" width="14" height="52" rx="4" fill="#3DDC84"/>
+  <rect x="262" y="182" width="14" height="68" rx="4" fill="#3DDC84"/>
+  <rect x="286" y="166" width="14" height="84" rx="4" fill="#6EF0A4"/>
+  <!-- Home indicator -->
+  <rect x="228" y="396" width="56" height="8" rx="4" fill="#07140C" opacity="0.45"/>
+</svg>

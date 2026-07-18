@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Web-scrcpy">
+  <defs>
+    <linearGradient id="g" x1="96" y1="64" x2="416" y2="448" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4AE892"/>
+      <stop offset="1" stop-color="#2BB86A"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="176" y1="120" x2="336" y2="392" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1A2430"/>
+      <stop offset="1" stop-color="#0B1016"/>
+    </linearGradient>
+  </defs>
+  <!-- Full-bleed safe for Android maskable (important content in center 80%) -->
+  <rect width="512" height="512" fill="#0E1014"/>
+  <circle cx="256" cy="256" r="196" fill="#3DDC84" opacity="0.1"/>
+  <rect x="176" y="96" width="160" height="320" rx="34" fill="url(#g)"/>
+  <rect x="192" y="120" width="128" height="256" rx="16" fill="url(#screen)"/>
+  <rect x="230" y="136" width="52" height="12" rx="6" fill="#0E1014" opacity="0.85"/>
+  <rect x="218" y="214" width="12" height="34" rx="3" fill="#3DDC84"/>
+  <rect x="240" y="200" width="12" height="48" rx="3" fill="#3DDC84"/>
+  <rect x="262" y="186" width="12" height="62" rx="3" fill="#3DDC84"/>
+  <rect x="284" y="172" width="12" height="76" rx="3" fill="#6EF0A4"/>
+  <rect x="230" y="392" width="52" height="8" rx="4" fill="#07140C" opacity="0.45"/>
+</svg>

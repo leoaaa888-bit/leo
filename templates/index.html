@@ -1,0 +1,4121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Web-scrcpy</title>
+    <meta name="description" content="在浏览器中控制 Android 屏幕">
+    <meta name="theme-color" content="#0E1014">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Web-scrcpy">
+    <meta name="application-name" content="Web-scrcpy">
+    <link rel="manifest" href="/static/site.webmanifest">
+    <link rel="icon" href="/static/icons/favicon.ico" sizes="any">
+    <link rel="icon" type="image/svg+xml" href="/static/icons/favicon.svg">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/icons/icon-16.png">
+    <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0E1014;
+            --bg-elev: #151821;
+            --panel: #1A1E28;
+            --panel-2: #222733;
+            --line: rgba(255, 255, 255, 0.08);
+            --line-strong: rgba(255, 255, 255, 0.14);
+            --text: #EEF0F4;
+            --muted: #8B93A7;
+            --faint: #5C6578;
+            --accent: #3DDC84;
+            --accent-2: #2BB86A;
+            --accent-dim: rgba(61, 220, 132, 0.14);
+            --accent-glow: rgba(61, 220, 132, 0.35);
+            --warn: #FFB020;
+            --danger: #FF6B6B;
+            --radius: 12px;
+            --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+            --topbar-h: 56px;
+            --rail-w: 68px;
+            /* mobile: fixed tools rail; stage centered in leftover */
+            --device-ar: 9 / 19.5;
+            --device-ar-ratio: 0.461538;
+            --side-w: 56px;
+            --nav-h: 56px;
+            --frame-nav-gap: 4px;
+            --device-frame-radius: 10px;
+            --screen-radius: 0px;
+            --device-bezel: 3px;
+            --safe-b: env(safe-area-inset-bottom, 0px);
+            /* Prefer OS safe-area; fall back to Window Controls Overlay titlebar height */
+            --safe-t: max(
+                env(safe-area-inset-top, 0px),
+                env(titlebar-area-height, 0px)
+            );
+        }
+
+        /* Desktop installed app / PWA: leave room for OS title / status bar */
+        @media (min-width: 769px) {
+            @media (display-mode: standalone), (display-mode: minimal-ui), (display-mode: window-controls-overlay) {
+                :root {
+                    --safe-t: max(
+                        env(safe-area-inset-top, 0px),
+                        env(titlebar-area-height, 0px),
+                        32px
+                    );
+                }
+            }
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        html, body { height: 100%; }
+
+        body {
+            font-family: "IBM Plex Sans", system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            overflow: hidden;
+            -webkit-font-smoothing: antialiased;
+            height: 100vh;
+            height: 100dvh;
+            touch-action: manipulation;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            background:
+                radial-gradient(ellipse 90% 55% at 50% -15%, rgba(61, 220, 132, 0.1), transparent 55%),
+                radial-gradient(ellipse 50% 40% at 100% 100%, rgba(90, 120, 220, 0.06), transparent 50%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        button { font: inherit; color: inherit; }
+        button:focus { outline: none; }
+        button:focus-visible {
+            outline: 2px solid rgba(61, 220, 132, 0.55);
+            outline-offset: 2px;
+        }
+
+        .app {
+            position: relative;
+            z-index: 1;
+            height: 100vh;
+            height: 100dvh;
+            display: grid;
+            /* Top safe inset is a separate row so the whole UI shifts below the status bar */
+            grid-template-rows: var(--safe-t) var(--topbar-h) 1fr;
+            grid-template-areas:
+                "safe"
+                "top"
+                "main";
+        }
+
+        .app::before {
+            content: "";
+            grid-area: safe;
+            background: rgba(21, 24, 33, 0.96);
+            border-bottom: 1px solid transparent;
+            /* Drag region for desktop PWA / Window Controls Overlay */
+            -webkit-app-region: drag;
+            app-region: drag;
+        }
+
+        /* —— topbar —— */
+        .topbar {
+            grid-area: top;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 0 14px;
+            height: var(--topbar-h);
+            border-bottom: 1px solid var(--line);
+            background: rgba(21, 24, 33, 0.88);
+            backdrop-filter: blur(16px) saturate(1.2);
+            -webkit-backdrop-filter: blur(16px) saturate(1.2);
+            z-index: 20;
+            min-width: 0;
+            -webkit-app-region: drag;
+            app-region: drag;
+        }
+
+        .topbar button,
+        .topbar select,
+        .topbar .seg,
+        .topbar .chip-wrap,
+        .topbar .device-chip {
+            -webkit-app-region: no-drag;
+            app-region: no-drag;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+
+        .brand-mark {
+            width: 24px;
+                height: 24px;
+            border-radius: 9px;
+            background: transparent;
+            color: #07140C;
+            display: grid;
+            place-items: center;
+            overflow: hidden;
+            box-shadow: 0 0 0 1px rgba(61, 220, 132, 0.3), 0 6px 16px rgba(61, 220, 132, 0.2);
+        }
+
+        .brand-mark img,
+        .brand-mark svg {
+            width: 24px;
+                height: 24px;
+            display: block;
+        }
+
+        .brand-text {
+            display: flex;
+            flex-direction: column;
+            line-height: 1.15;
+        }
+
+        .brand-text strong {
+            font-size: 13.5px;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+        }
+
+        .brand-text small {
+            font-size: 10px;
+            color: var(--faint);
+            font-family: "IBM Plex Mono", monospace;
+            letter-spacing: 0.04em;
+        }
+
+        .device-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 5px 10px 5px 8px;
+            border-radius: 999px;
+            background: var(--accent-dim);
+            border: 1px solid rgba(61, 220, 132, 0.28);
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--accent);
+            transition: background 0.2s, border-color 0.2s, color 0.2s;
+            max-width: 220px;
+            min-width: 0;
+        }
+
+        .device-chip[data-state="connecting"],
+        .device-chip[data-state="reconnecting"] {
+            background: rgba(255, 176, 32, 0.12);
+            border-color: rgba(255, 176, 32, 0.35);
+            color: var(--warn);
+        }
+
+        .device-chip[data-state="offline"] {
+            background: rgba(255, 107, 107, 0.1);
+            border-color: rgba(255, 107, 107, 0.3);
+            color: var(--danger);
+        }
+
+        .device-chip .pulse {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: currentColor;
+            flex-shrink: 0;
+        }
+
+        .device-chip[data-state="connected"] .pulse {
+            box-shadow: 0 0 0 0 var(--accent-glow);
+            animation: pulse 2.2s ease infinite;
+        }
+
+        .device-chip[data-state="connecting"] .pulse,
+        .device-chip[data-state="reconnecting"] .pulse {
+            animation: blink 1s steps(2) infinite;
+        }
+
+        @keyframes pulse {
+            70% { box-shadow: 0 0 0 8px transparent; }
+            100% { box-shadow: 0 0 0 0 transparent; }
+        }
+
+        @keyframes blink { 50% { opacity: 0.25; } }
+
+        .chip-label {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .chip-wrap {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-left: 4px;
+        }
+
+        .chip-latency {
+            display: none;
+            font-family: "IBM Plex Mono", monospace;
+            font-size: 13px;
+            font-weight: 400;
+            line-height: 1;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: 0.02em;
+            color: rgba(255, 255, 255, 0.72);
+            white-space: nowrap;
+            min-width: 6ch;
+        }
+
+        .chip-wrap:has(.device-chip[data-state="connected"]) .chip-latency {
+            display: inline;
+        }
+
+        .grow { flex: 1; min-width: 8px; }
+
+        .toolbar-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        .toolbar-group + .toolbar-group {
+            margin-left: 4px;
+            padding-left: 10px;
+            border-left: 1px solid var(--line);
+        }
+
+        /* Desktop: lock button — no longer tied to side rail */
+        .toolbar-group.lock {
+            margin-left: 4px;
+            padding-left: 10px;
+            border-left: 1px solid var(--line);
+        }
+
+        .seg {
+            display: inline-flex;
+            background: var(--bg-elev);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 3px;
+            gap: 2px;
+        }
+
+        .seg button {
+            appearance: none;
+            border: none;
+            background: transparent;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 500;
+            padding: 6px 11px;
+            border-radius: 7px;
+            cursor: pointer;
+            transition: background 0.15s var(--ease), color 0.15s, box-shadow 0.15s;
+            white-space: nowrap;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .seg button .q-stack { display: none; }
+        .seg button .q-row { display: inline; }
+
+        .seg button:hover { color: var(--text); }
+
+        .seg button.active {
+            background: var(--panel-2);
+            color: var(--text);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+        }
+
+        /* hidden native select kept for JS compatibility */
+        #quality-select {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .icon-btn {
+            appearance: none;
+            border: 1px solid var(--line);
+            background: var(--panel-2);
+            width: 36px;
+            height: 44px;
+            border-radius: 10px;
+            display: grid;
+            place-items: center;
+            cursor: pointer;
+            color: var(--text);
+            transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s, box-shadow 0.15s;
+            touch-action: manipulation;
+            position: relative;
+            -webkit-tap-highlight-color: transparent;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        .icon-btn svg {
+            width: 17px;
+            height: 17px;
+            pointer-events: none;
+        }
+
+        .icon-btn .icon { pointer-events: none; }
+
+        .icon-btn:hover {
+            background: var(--panel);
+            border-color: var(--line-strong);
+        }
+
+        .icon-btn:active,
+        .icon-btn.is-pressed {
+            transform: scale(0.93);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .icon-btn.is-active,
+        .icon-btn.is-on {
+            background: var(--accent-dim);
+            border-color: rgba(61, 220, 132, 0.45);
+            color: var(--accent);
+            box-shadow: 0 0 0 1px rgba(61, 220, 132, 0.12);
+        }
+
+        .icon-btn.danger:hover {
+            border-color: rgba(255, 107, 107, 0.45);
+            color: var(--danger);
+            background: rgba(255, 107, 107, 0.08);
+        }
+
+        .icon-btn[data-tip]::after {
+            content: attr(data-tip);
+            position: absolute;
+            top: calc(100% + 8px);
+            left: 50%;
+            transform: translateX(-50%) translateY(2px);
+            background: #0A0C10;
+            border: 1px solid var(--line-strong);
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 500;
+            padding: 5px 8px;
+            border-radius: 6px;
+            white-space: nowrap;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.12s, transform 0.12s;
+            z-index: 40;
+        }
+
+        @media (hover: hover) and (pointer: fine) {
+            .icon-btn[data-tip]:hover::after {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
+
+        /* —— workspace —— */
+        .workspace {
+            grid-area: main;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            overflow: hidden;
+        }
+
+        .stage-stack {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            flex: 1 1 0;
+            min-height: 0;
+            width: 100%;
+            gap: var(--frame-nav-gap);
+        }
+
+        .video-wrapper {
+            position: relative;
+            flex: 1 1 0;
+            height: auto;
+            min-height: 0;
+            overflow: hidden;
+            touch-action: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px 24px 6px;
+            box-sizing: border-box;
+        }
+
+        .device-frame {
+            position: relative;
+            flex-shrink: 0;
+            margin: 0 auto;
+            align-self: center;
+            background: #0a0a0c;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: var(--device-frame-radius);
+            padding: var(--device-bezel);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            transition: box-shadow 0.25s var(--ease), border-color 0.25s var(--ease);
+        }
+
+        .device-frame.kb-focus {
+            border-color: rgba(61, 220, 132, 0.35);
+            box-shadow:
+                0 0 0 1px rgba(61, 220, 132, 0.18),
+                0 8px 24px rgba(0, 0, 0, 0.28);
+        }
+
+        .device-notch {
+            display: none;
+        }
+
+        .screen-slot {
+            position: relative;
+            flex: 1 1 0;
+            width: 100%;
+            min-width: 0;
+            min-height: 0;
+            border-radius: var(--screen-radius);
+            overflow: hidden;
+            background: #000;
+        }
+
+        .screen-loader {
+            position: absolute;
+            inset: 0;
+            z-index: 4;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            padding: 20px;
+            background:
+                radial-gradient(ellipse 70% 50% at 50% 40%, rgba(61, 220, 132, 0.1), transparent 60%),
+                linear-gradient(180deg, #10141c 0%, #07090d 100%);
+            transition: opacity 0.35s var(--ease), visibility 0.35s;
+            /* Allow taps to reach the canvas so mobile audio unlock still works */
+            pointer-events: none;
+        }
+
+        .screen-loader.is-hidden {
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+        }
+
+        .screen-loader-phone {
+            width: min(42%, 120px);
+            aspect-ratio: 9 / 19.5;
+            border-radius: 18px;
+            border: 2px solid rgba(61, 220, 132, 0.45);
+            background: rgba(61, 220, 132, 0.06);
+            position: relative;
+            box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04) inset, 0 12px 32px rgba(0, 0, 0, 0.35);
+            overflow: hidden;
+        }
+
+        .screen-loader-phone::before {
+            content: "";
+            position: absolute;
+            top: 8%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 28%;
+            height: 3.5%;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.12);
+        }
+
+        .screen-loader-phone::after {
+            content: "";
+            position: absolute;
+            inset: 18% 16% 22%;
+            border-radius: 8px;
+            background: linear-gradient(
+                110deg,
+                transparent 25%,
+                rgba(61, 220, 132, 0.18) 45%,
+                transparent 65%
+            );
+            background-size: 200% 100%;
+            animation: loader-shimmer 1.4s ease-in-out infinite;
+        }
+
+        .screen-loader-bars {
+            position: absolute;
+            left: 50%;
+            bottom: 28%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: flex-end;
+            gap: 10px;
+            height: 28%;
+            z-index: 1;
+        }
+
+        .screen-loader-bars span {
+            width: 5px;
+            border-radius: 3px;
+            background: var(--accent);
+            animation: loader-bar 0.9s ease-in-out infinite;
+        }
+
+        .screen-loader-bars span:nth-child(1) { height: 40%; animation-delay: 0s; }
+        .screen-loader-bars span:nth-child(2) { height: 65%; animation-delay: 0.12s; }
+        .screen-loader-bars span:nth-child(3) { height: 85%; animation-delay: 0.24s; }
+        .screen-loader-bars span:nth-child(4) { height: 55%; animation-delay: 0.36s; }
+
+        .screen-loader-copy {
+            text-align: center;
+            max-width: 16em;
+        }
+
+        .screen-loader-copy strong {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            color: var(--text);
+            margin-bottom: 4px;
+        }
+
+        .screen-loader-copy span {
+            font-size: 13px;
+            color: var(--muted);
+            font-family: "IBM Plex Mono", monospace;
+        }
+
+        @keyframes loader-shimmer {
+            0% { background-position: 120% 0; }
+            100% { background-position: -80% 0; }
+        }
+
+        @keyframes loader-bar {
+            0%, 100% { opacity: 0.35; transform: scaleY(0.7); }
+            50% { opacity: 1; transform: scaleY(1); }
+        }
+
+        canvas#player,
+        video#fallback-player {
+            position: absolute;
+            inset: 0;
+            display: block;
+            width: 100%;
+            height: 100%;
+            border-radius: 0;
+            background: black;
+            touch-action: none;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        canvas#player { image-rendering: auto; }
+
+        video#fallback-player {
+            object-fit: contain;
+            object-position: center;
+        }
+
+        video#fallback-player { display: none; }
+        video#fallback-player.is-active { display: block; }
+        canvas#player.is-hidden { display: none; }
+
+        video.hide-controls::-webkit-media-controls { display: none !important; }
+
+        #player:focus,
+        #player.keyboard-focused,
+        #fallback-player:focus,
+        #fallback-player.keyboard-focused {
+            outline: none;
+        }
+
+        #mobile-keyboard-input,
+        #mobile-kb-surface {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            resize: none;
+            border: none;
+            padding: 0;
+            margin: 0;
+            color: transparent;
+            background: transparent;
+            caret-color: transparent;
+            pointer-events: none;
+            z-index: -1;
+            font-size: 16px;
+            clip: rect(0, 0, 0, 0);
+            overflow: hidden;
+        }
+
+        .keyboard-hint {
+            position: absolute;
+            top: 36px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-6px);
+            z-index: 6;
+            font-size: 12px;
+            font-weight: 500;
+            color: #fff;
+            background: rgba(10, 12, 16, 0.82);
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--line-strong);
+            padding: 7px 14px;
+            border-radius: 999px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s, transform 0.2s var(--ease);
+            white-space: nowrap;
+            max-width: 90%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .keyboard-hint.is-visible {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        #status {
+            position: absolute;
+            left: 20px;
+            bottom: 18px;
+            z-index: 5;
+            font-family: "IBM Plex Mono", monospace;
+            font-size: 10.5px;
+            color: var(--muted);
+            background: rgba(10, 12, 16, 0.65);
+            border: 1px solid var(--line);
+            padding: 5px 8px;
+            border-radius: 7px;
+            backdrop-filter: blur(8px);
+            pointer-events: none;
+            max-width: calc(100% - 40px);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* —— rail / nav —— */
+        .nav-bar {
+            flex: 0 0 auto;
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: var(--nav-h);
+            padding: 0;
+            border: none;
+            border-top: 1px solid var(--line);
+            background: rgba(21, 24, 33, 0.55);
+            backdrop-filter: blur(8px);
+            flex-shrink: 0;
+            position: relative;
+            z-index: 2;
+        }
+
+        .nav-bar-track {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: stretch;
+            width: var(--device-frame-w, auto);
+            max-width: 100%;
+            height: 100%;
+            gap: 0;
+        }
+
+        .nav-bar .icon-btn {
+            flex: 1;
+            width: auto;
+            height: 100%;
+            border: none;
+            border-radius: 0;
+            background: transparent;
+        }
+
+        .nav-bar .icon-btn:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .nav-bar .icon-btn:active,
+        .nav-bar .icon-btn.is-pressed {
+            background: rgba(255, 255, 255, 0.08);
+            transform: none;
+        }
+
+        .nav-bar .icon-btn svg {
+            width: 20px;
+            height: 20px;
+        }
+
+        @media (min-width: 769px) {
+            .nav-bar {
+                height: 60px;
+            }
+        }
+
+        .rail-cap {
+            display: none;
+        }
+
+        /* Floating tools button: mobile only */
+        .fab-tools {
+            display: none;
+        }
+
+        /* —— mobile：全屏画面 + 悬浮工具面板 —— */
+        @media (max-width: 768px) {
+            .app {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr);
+                grid-template-rows: minmax(0, 1fr);
+                grid-template-areas:
+                    "main";
+            }
+
+            .app::before {
+                display: none;
+            }
+
+            .workspace {
+                grid-area: main;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                min-width: 0;
+                min-height: 0;
+                background: #000;
+                overflow: hidden;
+            }
+
+            /* Keep screen + bottom nav as one column → same width */
+            .stage-stack {
+                display: flex;
+                flex-direction: column;
+                align-items: stretch;
+                height: 100%;
+                width: 100%;
+                max-width: 100%;
+                min-width: 0;
+                max-height: 100%;
+                gap: 0;
+            }
+
+            .video-wrapper {
+                flex: 1 1 0;
+                padding: 0;
+                min-width: 0;
+                min-height: 0;
+                width: 100%;
+                background: #000;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                overflow: hidden;
+            }
+
+            .device-frame {
+                background: transparent;
+                border: none;
+                border-radius: 0;
+                padding: 0;
+                box-shadow: none;
+                margin: 0;
+            }
+
+            .device-frame.kb-focus {
+                border: none;
+                box-shadow: inset 0 0 0 2px rgba(61, 220, 132, 0.42);
+            }
+            .screen-slot {
+                border-radius: var(--screen-radius);
+                width: 100%;
+                flex: 1 1 0;
+                min-height: 0;
+            }
+
+            canvas#player,
+            video#fallback-player {
+                position: absolute;
+                inset: 0;
+                width: 100%;
+                height: 100%;
+            }
+
+            /* Topbar becomes a floating tool panel toggled by the FAB */
+            .topbar {
+                position: fixed;
+                right: 10px;
+                bottom: calc(76px + var(--safe-b));
+                z-index: 30;
+                width: auto;
+                min-width: 0;
+                max-width: calc(100vw - 20px);
+                height: auto;
+                min-height: 0;
+                display: grid;
+                grid-template-columns: repeat(5, 54px);
+                grid-template-rows: repeat(2, 44px);
+                align-items: center;
+                justify-content: center;
+                align-content: center;
+                gap: 8px 6px;
+                padding: 24px 8px 10px;
+                border: 1px solid var(--line-strong);
+                border-radius: 16px;
+                background: rgba(14, 16, 20, 0.94);
+                backdrop-filter: blur(16px);
+                -webkit-backdrop-filter: blur(16px);
+                box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+                box-sizing: border-box;
+                opacity: 0;
+                visibility: hidden;
+                pointer-events: none;
+                transform: translateY(8px) scale(0.98);
+                transform-origin: 100% 100%;
+                transition: opacity 0.18s var(--ease), transform 0.18s var(--ease), visibility 0.18s;
+                -webkit-app-region: no-drag;
+                app-region: no-drag;
+            }
+
+            .app.tools-open .topbar {
+                opacity: 1;
+                visibility: visible;
+                pointer-events: auto;
+                transform: none;
+            }
+
+            .fab-tools {
+                display: grid;
+                place-items: center;
+                position: fixed;
+                right: 10px;
+                bottom: calc(16px + var(--safe-b));
+                z-index: 31;
+                width: 48px;
+                height: 48px;
+                padding: 0;
+                appearance: none;
+                border-radius: 50%;
+                border: 1px solid var(--line-strong);
+                background: rgba(14, 16, 20, 0.78);
+                backdrop-filter: blur(12px);
+                -webkit-backdrop-filter: blur(12px);
+                color: var(--text);
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+                cursor: pointer;
+                -webkit-tap-highlight-color: transparent;
+                -webkit-user-select: none;
+                user-select: none;
+                /* none (not manipulation): pointermove must win over browser
+                   pan/refresh gestures while dragging the ball */
+                touch-action: none;
+            }
+
+            .fab-tools svg {
+                width: 20px;
+                height: 20px;
+                pointer-events: none;
+            }
+
+            .app.tools-open .fab-tools {
+                background: var(--accent-dim);
+                border-color: rgba(61, 220, 132, 0.45);
+                color: var(--accent);
+            }
+
+            .nav-bar {
+                display: none;
+            }
+
+            .screen-loader {
+                gap: 10px;
+                padding: 12px;
+            }
+
+            .screen-loader-phone {
+                width: min(38%, 88px);
+            }
+
+            .screen-loader-copy strong {
+                font-size: 12px;
+            }
+
+            .screen-loader-copy span {
+                font-size: 10px;
+            }
+
+            .rail-cap { display: none; }
+            .brand { display: none; }
+            .grow { display: none; }
+            .brand-text,
+            .chip-label { display: none; }
+
+            .chip-wrap {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 3px;
+                width: 54px;
+                height: 44px;
+                flex: 0 0 54px;
+            }
+
+            .device-chip {
+                display: none;
+            }
+
+            .device-chip .pulse {
+                width: 9px;
+                height: 9px;
+            }
+
+            .device-chip[data-state="connected"] .pulse {
+                animation: none;
+                box-shadow: none;
+            }
+
+            .chip-latency {
+                display: block;
+                visibility: visible;
+                min-height: 0;
+                font-family: "IBM Plex Mono", monospace;
+                font-size: 9px;
+                line-height: 1;
+                font-variant-numeric: tabular-nums;
+                letter-spacing: 0;
+                color: rgba(255, 255, 255, 0.62);
+                text-align: right;
+                white-space: nowrap;
+                min-width: 0;
+                padding: 1px 3px;
+                border-radius: 4px;
+                background: rgba(0, 0, 0, 0.24);
+            }
+
+            .chip-wrap:has(.device-chip[data-state="connected"]) .chip-latency {
+                visibility: visible;
+            }
+
+            .chip-wrap {
+                position: absolute;
+                top: 3px;
+                right: 4px;
+                z-index: 3;
+                width: auto;
+                height: auto;
+                min-width: 0;
+                pointer-events: none;
+            }
+
+            .toolbar-group:has(#quality-seg) {
+                grid-column: 1 / 5;
+                grid-row: 1;
+            }
+
+            .toolbar-group.keyboard-tools {
+                display: flex !important;
+                grid-column: 5;
+                grid-row: 1;
+            }
+
+            .toolbar-group.audio-tools {
+                grid-column: 1;
+                grid-row: 2;
+            }
+
+            .toolbar-group.vol {
+                grid-column: 2 / 4;
+                grid-row: 2;
+            }
+
+            .toolbar-group.screenshot-tools {
+                display: flex !important;
+                grid-column: 4;
+                grid-row: 2;
+            }
+
+            .toolbar-group.lock {
+                grid-column: 5;
+                grid-row: 2;
+            }
+.toolbar-group {
+                flex-direction: row;
+                gap: 6px;
+                margin: 0 !important;
+                padding: 0 !important;
+                border: none !important;
+                width: auto;
+                min-width: 0;
+                max-width: none;
+                align-items: center;
+                align-self: center;
+                justify-self: center;
+                flex: 0 0 auto;
+            }
+
+            .toolbar-group.lock {
+                width: auto;
+                min-width: 0;
+                max-width: none;
+            }
+
+            .toolbar-group.vol {
+                display: grid;
+                grid-template-columns: repeat(2, 54px);
+                gap: 6px;
+            }
+
+            .seg {
+                display: grid;
+                grid-template-columns: repeat(4, 54px);
+                width: auto;
+                padding: 0;
+                gap: 6px;
+                box-sizing: border-box;
+                background: transparent;
+                border: none;
+            }
+
+            #quality-select {
+                display: none !important;
+            }
+
+            .seg button {
+                display: flex;
+                flex-direction: row;
+                align-items: center;
+                justify-content: center;
+                gap: 0;
+                padding: 0 8px;
+                font-size: 13px;
+                font-weight: 600;
+                line-height: 1;
+                letter-spacing: 0;
+                width: auto;
+                min-width: 54px;
+                height: 44px;
+                border-radius: 8px;
+            }
+            .seg button .q-row { display: inline; }
+            .seg button .q-stack { display: none; }
+            .seg button .q-char { display: inline; line-height: 1; }
+
+            .topbar .icon-btn {
+                width: 54px;
+                height: 44px;
+                aspect-ratio: auto;
+                max-width: none;
+                border-radius: 10px;
+                box-sizing: border-box;
+                flex: 0 0 auto;
+            }
+
+            .topbar .icon-btn svg {
+                width: 24px;
+                height: 24px;
+            }
+
+            .icon-btn[data-tip]::after { display: none; }
+            #status { display: none !important; }
+        }
+
+        /* —— Disguise gate: Chrome offline dino page —— */
+        .offline-gate {
+            --offline-bg: #fff;
+            --offline-fg: #5f6368;
+            --offline-title: #202124;
+            --offline-blue: #1a73e8;
+            position: fixed;
+            inset: 0;
+            z-index: 99999;
+            background: var(--offline-bg);
+            color: var(--offline-fg);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 24px 32px calc(24px + env(safe-area-inset-bottom, 0px));
+            font-family: "Segoe UI", Roboto, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            cursor: default;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .offline-gate {
+                --offline-bg: #202124;
+                --offline-fg: #9aa0a6;
+                --offline-title: #e8eaed;
+                --offline-blue: #8ab4f8;
+            }
+        }
+
+        .offline-gate.is-gone {
+            display: none;
+        }
+
+        .offline-inner {
+            max-width: 340px;
+            width: 100%;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .offline-dino {
+            color: var(--offline-fg);
+            margin-bottom: 30px;
+            opacity: 0.95;
+        }
+
+        .offline-dino svg { display: block; }
+
+        .offline-title {
+            font-size: 20px;
+            font-weight: 500;
+            color: var(--offline-title);
+            margin: 0 0 12px;
+            letter-spacing: 0.2px;
+        }
+
+        .offline-hint {
+            font-size: 14px;
+            line-height: 1.6;
+            margin: 0 0 8px;
+        }
+
+        .offline-code {
+            font-size: 12px;
+            color: var(--offline-fg);
+            opacity: 0.7;
+            letter-spacing: 0.4px;
+            margin: 0 0 32px;
+        }
+
+        .offline-retry {
+            appearance: none;
+            border: 1px solid var(--offline-blue);
+            background: transparent;
+            color: var(--offline-blue);
+            font-size: 14px;
+            font-weight: 500;
+            padding: 9px 22px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+
+        .offline-retry:active {
+            background: rgba(26, 115, 232, 0.08);
+        }
+
+        /* Invisible unlock zone: bottom-right corner, 3 taps to enter */
+        .offline-hotspot {
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            width: 96px;
+            height: 96px;
+            z-index: 1;
+            touch-action: manipulation;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        /* —— Diagnostics overlay (long-press the floating ball) —— */
+        .diag-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 100000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.55);
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
+        }
+
+        .diag-overlay.is-open {
+            display: flex;
+        }
+
+        .diag-card {
+            width: 100%;
+            max-width: 460px;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+            background: #151821;
+            border: 1px solid var(--line-strong);
+            border-radius: 14px;
+            box-shadow: 0 20px 48px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
+        }
+
+        .diag-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--line);
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .diag-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .diag-btn {
+            appearance: none;
+            border: 1px solid var(--line-strong);
+            background: var(--panel-2);
+            color: var(--text);
+            font-size: 13px;
+            padding: 5px 14px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: inherit;
+            touch-action: manipulation;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .diag-copy {
+            background: var(--accent-dim);
+            border-color: rgba(61, 220, 132, 0.45);
+            color: var(--accent);
+        }
+
+        .diag-copy.copied {
+            background: var(--accent);
+            color: #07140C;
+        }
+
+        .diag-text {
+            flex: 1;
+            width: 100%;
+            min-height: 320px;
+            resize: none;
+            border: none;
+            outline: none;
+            padding: 12px 16px;
+            background: #0E1014;
+            color: var(--text);
+            font-family: "IBM Plex Mono", monospace;
+            /* iOS Safari auto-zooms the page when a focused input/textarea has
+               font-size under 16px (it assumes you need to see what you're
+               typing). copyDiagnostics() calls ta.focus() to select-and-copy,
+               so this must stay >= 16px or every copy tap re-triggers the zoom. */
+            font-size: 16px;
+            line-height: 1.5;
+            white-space: pre;
+            overflow: auto;
+            -webkit-user-select: text;
+            user-select: text;
+        }
+
+        /* —— 截屏预览浮层 —— */
+        .shot-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 100001;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+            background: rgba(0, 0, 0, 0.72);
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
+        }
+
+        .shot-overlay.is-open {
+            display: flex;
+        }
+
+        .shot-card {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            max-width: 92vw;
+            max-height: 90vh;
+        }
+
+        .shot-img {
+            max-width: 100%;
+            max-height: 74vh;
+            object-fit: contain;
+            border-radius: 8px;
+            border: 1px solid var(--line-strong);
+            background: #000;
+            -webkit-touch-callout: default;
+        }
+
+        .shot-bar {
+            display: flex;
+            gap: 10px;
+        }
+
+        .shot-save,
+        .shot-close {
+            appearance: none;
+            border: 1px solid var(--line-strong);
+            font-size: 14px;
+            font-weight: 500;
+            padding: 9px 22px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+
+        .shot-save {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #07140C;
+        }
+
+        .shot-close {
+            background: var(--panel-2);
+            color: var(--text);
+        }
+    </style>
+    <script src="/static/js/input.js?v=28"></script>
+    <script src="/static/js/exp-golomb.js?v=21"></script>
+    <script src="/static/js/h264-sps-parser.js?v=22"></script>
+    <script src="/static/js/video_parser.js?v=23"></script>
+    <script src="/static/js/audio_parser.js?v=30"></script>
+    <script src="/static/js/audio_player.js?v=42"></script>
+    <script src="/static/js/video_player.js?v=26"></script>
+</head>
+
+<body>
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+        <symbol id="i-phone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>
+        </symbol>
+        <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+        </symbol>
+        <symbol id="i-keyboard" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/>
+        </symbol>
+        <symbol id="i-camera" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>
+        </symbol>
+        <symbol id="i-vol-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m23 9-6 6M17 9l6 6"/>
+        </symbol>
+        <symbol id="i-vol-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
+        </symbol>
+        <symbol id="i-vol-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+        </symbol>
+        <symbol id="i-vol-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
+        </symbol>
+        <symbol id="i-back" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M14.7 5.3a1 1 0 0 1 0 1.4L9.4 12l5.3 5.3a1 1 0 1 1-1.4 1.4l-6-6a1 1 0 0 1 0-1.4l6-6a1 1 0 0 1 1.4 0z"/>
+        </symbol>
+        <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <circle cx="12" cy="12" r="6.5"/>
+        </symbol>
+        <symbol id="i-recents" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round">
+            <rect x="6" y="6" width="12" height="12" rx="2.5"/>
+        </symbol>
+    </svg>
+
+    <div class="app">
+        <header class="topbar">
+            <div class="brand">
+                <div class="brand-mark" aria-hidden="true">
+                    <img src="/static/icons/favicon.svg" alt="" width="18" height="18">
+                </div>
+                <div class="brand-text">
+                    <strong>Web-scrcpy</strong>
+                    <small>CONTROL</small>
+                </div>
+            </div>
+
+            <div class="chip-wrap" id="chip-wrap">
+                <div class="device-chip" id="device-chip" data-state="connecting" title="连接状态">
+                    <span class="pulse" aria-hidden="true"></span>
+                    <span class="chip-label" id="chip-label">正在连接…</span>
+                </div>
+                <span class="chip-latency" id="chip-latency" title="延迟">-- ms</span>
+            </div>
+
+            <div class="grow"></div>
+
+            <div class="toolbar-group">
+                <div class="seg" id="quality-seg" role="group" aria-label="画质模式" title="画质模式（切换后会重新连接）">
+                    <button type="button" data-q="clear"><span class="q-row">原画</span><span class="q-stack" aria-hidden="true"><span class="q-char">原</span><span class="q-char">画</span></span></button>
+                    <button type="button" data-q="hd"><span class="q-row">高清</span><span class="q-stack" aria-hidden="true"><span class="q-char">高</span><span class="q-char">清</span></span></button>
+                    <button type="button" data-q="balanced"><span class="q-row">均衡</span><span class="q-stack" aria-hidden="true"><span class="q-char">均</span><span class="q-char">衡</span></span></button>
+                    <button type="button" data-q="smooth"><span class="q-row">清晰</span><span class="q-stack" aria-hidden="true"><span class="q-char">清</span><span class="q-char">晰</span></span></button>
+                </div>
+                <select id="quality-select" aria-hidden="true" tabindex="-1">
+                    <option value="clear">原画</option>
+                    <option value="hd">高清</option>
+                    <option value="balanced">均衡</option>
+                    <option value="smooth">清晰</option>
+                </select>
+            </div>
+
+            <div class="toolbar-group keyboard-tools">
+                <button type="button" class="icon-btn" id="keyboard-toggle-icon" data-tip="键盘映射" title="键盘映射">
+                    <svg><use href="#i-keyboard"/></svg>
+                </button>
+            </div>
+
+            <div class="toolbar-group screenshot-tools">
+                <button type="button" class="icon-btn" id="screenshot-icon" data-tip="截屏" title="截屏保存">
+                    <svg><use href="#i-camera"/></svg>
+                </button>
+            </div>
+
+            <div class="toolbar-group audio-tools">
+                <button type="button" class="icon-btn" id="audio-toggle-icon" data-tip="声音已映射到本机" title="声音已映射到本机">
+                    <svg class="icon" id="audio-toggle-symbol"><use href="#i-vol-off"/></svg>
+                </button>
+            </div>
+
+            <div class="toolbar-group vol">
+                <button type="button" class="icon-btn" id="volume-up-icon" data-tip="音量加" title="音量加">
+                    <svg><use href="#i-vol-up"/></svg>
+                </button>
+                <button type="button" class="icon-btn" id="volume-down-icon" data-tip="音量减" title="音量减">
+                    <svg><use href="#i-vol-down"/></svg>
+                </button>
+            </div>
+
+            <div class="toolbar-group lock">
+                <button type="button" class="icon-btn danger" id="power-icon" data-tip="锁屏 / 解锁" title="锁屏/解锁">
+                    <svg><use href="#i-lock"/></svg>
+                </button>
+            </div>
+        </header>
+
+        <div class="workspace">
+            <div class="stage-stack">
+                <div class="video-wrapper" id="video-wrapper">
+                    <div class="device-frame" id="device-frame">
+                        <div class="device-notch" aria-hidden="true"></div>
+                        <div class="screen-slot">
+                            <div class="screen-loader" id="screen-loader" role="status" aria-live="polite">
+                                <div class="screen-loader-phone" aria-hidden="true">
+                                    <div class="screen-loader-bars">
+                                        <span></span><span></span><span></span><span></span>
+                                    </div>
+                                </div>
+                                <div class="screen-loader-copy">
+                                    <strong id="loader-title">正在连接设备</strong>
+                                    <span id="loader-sub">等待画面…</span>
+                                </div>
+                            </div>
+                            <canvas id="player" tabindex="-1"></canvas>
+                            <video id="fallback-player" class="hide-controls" autoplay muted playsinline webkit-playsinline x5-playsinline tabindex="-1"></video>
+                            <div id="keyboard-hint" class="keyboard-hint"></div>
+                        </div>
+                    </div>
+                    <textarea id="mobile-keyboard-input" lang="zh-CN" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="text" aria-label="键盘输入"></textarea>
+                    <!-- contenteditable div (not a form field): keeps Chrome/iOS
+                         from showing the autofill bar above the keyboard -->
+                    <div id="mobile-kb-surface" contenteditable="true" lang="zh-CN" autocapitalize="none" autocorrect="off" spellcheck="false" inputmode="text" aria-label="键盘输入"></div>
+                    <video id="audio-player" autoplay playsinline webkit-playsinline x5-playsinline style="width:0;height:0;opacity:0;position:absolute;pointer-events:none"></video>
+                    <p id="status" style="display: none;">connecting to device...</p>
+                </div>
+
+                <nav class="nav-bar" aria-label="系统导航">
+                    <div class="nav-bar-track">
+                        <button type="button" class="icon-btn" id="back-icon" data-tip="返回" title="返回">
+                            <svg><use href="#i-back"/></svg>
+                        </button>
+                        <button type="button" class="icon-btn" id="home-icon" data-tip="主页" title="主页">
+                            <svg><use href="#i-home"/></svg>
+                        </button>
+                        <button type="button" class="icon-btn" id="menu-icon" data-tip="最近任务" title="最近任务">
+                            <svg><use href="#i-recents"/></svg>
+                        </button>
+                    </div>
+                </nav>
+            </div>
+        </div>
+
+        <button type="button" class="fab-tools" id="fab-tools" aria-label="工具面板" title="工具">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>
+            </svg>
+        </button>
+    </div>
+
+    <!-- Disguise gate: looks like Chrome's offline dino page. Real connection
+         is not started until the hidden corner is tapped 3 times. -->
+    <div class="offline-gate" id="offline-gate">
+        <div class="offline-inner">
+            <div class="offline-dino" aria-hidden="true">
+                <svg id="offline-dino-svg" viewBox="0 0 40 44" shape-rendering="crispEdges" width="80" height="88"></svg>
+            </div>
+            <h1 class="offline-title">您尚未连接到互联网</h1>
+            <p class="offline-hint">请检查您的网络连接后重试。</p>
+            <p class="offline-code">ERR_INTERNET_DISCONNECTED</p>
+            <button type="button" class="offline-retry" id="offline-retry">重新加载</button>
+        </div>
+        <div class="offline-hotspot" id="offline-hotspot" aria-hidden="true"></div>
+    </div>
+
+    <!-- Diagnostics: long-press the floating ball to open. Lists recent
+         reconnects so disconnection causes can be reported. -->
+    <div class="diag-overlay" id="diag-overlay">
+        <div class="diag-card">
+            <div class="diag-head">
+                <span>连接诊断</span>
+                <div class="diag-actions">
+                    <button type="button" id="diag-copy" class="diag-btn diag-copy">复制</button>
+                    <button type="button" id="diag-close" class="diag-btn diag-close">关闭</button>
+                </div>
+            </div>
+            <textarea id="diag-text" class="diag-text" readonly wrap="off" aria-label="诊断日志"></textarea>
+        </div>
+    </div>
+
+    <script src="/static/js/jmuxer.min.js?v=21"></script>
+    <script>
+        const AUDIO_STORAGE_KEY = 'audioEnabled';
+        const KEYBOARD_STORAGE_KEY = 'keyboardEnabled';
+        const QUALITY_STORAGE_KEY = 'qualityPreset';
+
+        const QUALITY_PRESETS = {
+            clear: {
+                label: '原画',
+                // Native Pixel 2 resolution (1080x1920): max_size caps the LONG
+                // edge, so 1920 keeps full sharpness on 3x retina displays.
+                // 5 Mbps fits typical home upload; 8 Mbps saturated it on motion.
+                video_bit_rate: '5000000',
+                max_size: '1920',
+                max_fps: '30',
+                jmuxerFps: 30,
+                // App open/close animations spike to ~16 Mbps for ~1s. Deeper
+                // buffer + higher stale tolerance ride through the burst instead
+                // of dropping frames mid-transition (the visible stutter). The
+                // extra latency only applies DURING a burst and recovers after.
+                maxDelay: 450,
+                staleFrameMs: 450,
+                maxDecodeQueue: 6,
+            },
+            hd: {
+                label: '高清',
+                // 介于清晰和均衡之间：1280 长边 + 3Mbps，比 800p 明显清晰，
+                // 带宽只有清晰档的 ~60%，弱网下更稳。
+                video_bit_rate: '3000000',
+                max_size: '1280',
+                max_fps: '30',
+                jmuxerFps: 30,
+                maxDelay: 300,
+                staleFrameMs: 300,
+                maxDecodeQueue: 4,
+            },
+            balanced: {
+                label: '均衡',
+                video_bit_rate: '2000000',
+                max_size: '800',
+                max_fps: '30',
+                jmuxerFps: 30,
+                maxDelay: 180,
+                staleFrameMs: 150,
+                maxDecodeQueue: 3,
+            },
+            smooth: {
+                label: '清晰',
+                video_bit_rate: '1200000',
+                max_size: '720',
+                max_fps: '30',
+                jmuxerFps: 30,
+                maxDelay: 140,
+                staleFrameMs: 120,
+                maxDecodeQueue: 2,
+            },
+        };
+
+        function loadAudioEnabled() {
+            const val = localStorage.getItem(AUDIO_STORAGE_KEY);
+            if (val === null) {
+                return true;
+            }
+            return val === 'true';
+        }
+
+        function saveAudioEnabled(enabled) {
+            localStorage.setItem(AUDIO_STORAGE_KEY, enabled ? 'true' : 'false');
+        }
+
+        function loadKeyboardEnabled() {
+            return localStorage.getItem(KEYBOARD_STORAGE_KEY) === 'true';
+        }
+
+        function saveKeyboardEnabled(enabled) {
+            localStorage.setItem(KEYBOARD_STORAGE_KEY, enabled ? 'true' : 'false');
+        }
+
+        function loadQualityPreset() {
+            const saved = localStorage.getItem(QUALITY_STORAGE_KEY);
+            if (saved && QUALITY_PRESETS[saved]) {
+                return saved;
+            }
+            return 'balanced';
+        }
+
+        function saveQualityPreset(preset) {
+            localStorage.setItem(QUALITY_STORAGE_KEY, preset);
+        }
+
+        let audioEnabled = loadAudioEnabled();
+        const isDesktopView = ScrcpyInput.isDesktopView();
+        let keyboardEnabled = isDesktopView && loadKeyboardEnabled();
+        let qualityPreset = loadQualityPreset();
+        let qualityConfig = QUALITY_PRESETS[qualityPreset];
+        const canvasElement = document.getElementById('player');
+        const fallbackVideo = document.getElementById('fallback-player');
+        const audioElement = document.getElementById('audio-player');
+        const videoWrapper = document.getElementById('video-wrapper');
+        const mobileKeyboardInput = document.getElementById('mobile-keyboard-input');
+        const keyboardHint = document.getElementById('keyboard-hint');
+        const qualitySelect = document.getElementById('quality-select');
+        const qualitySeg = document.getElementById('quality-seg');
+        const deviceChip = document.getElementById('device-chip');
+        const chipLabel = document.getElementById('chip-label');
+        const chipLatency = document.getElementById('chip-latency');
+        const deviceFrame = document.getElementById('device-frame');
+        const screenLoader = document.getElementById('screen-loader');
+        const loaderTitle = document.getElementById('loader-title');
+        const loaderSub = document.getElementById('loader-sub');
+        let screenReady = false;
+        fallbackVideo.muted = true;
+        audioElement.volume = 1;
+        try { audioElement.setAttribute('playsinline', ''); } catch (e) {}
+        try { audioElement.setAttribute('webkit-playsinline', ''); } catch (e) {}
+        if (qualitySelect) {
+            qualitySelect.value = qualityPreset;
+        }
+        function syncQualitySeg() {
+            if (!qualitySeg) {
+                return;
+            }
+            qualitySeg.querySelectorAll('button').forEach((btn) => {
+                btn.classList.toggle('active', btn.dataset.q === qualityPreset);
+            });
+        }
+        syncQualitySeg();
+
+        function setLoaderCopy(title, sub) {
+            if (loaderTitle && title) {
+                loaderTitle.textContent = title;
+            }
+            if (loaderSub && sub) {
+                loaderSub.textContent = sub;
+            }
+        }
+
+        function showScreenLoader(title, sub) {
+            screenReady = false;
+            if (screenLoader) {
+                screenLoader.classList.remove('is-hidden');
+            }
+            setLoaderCopy(title || '正在连接设备', sub || '等待画面…');
+        }
+
+        function hideScreenLoader() {
+            if (screenReady) {
+                return;
+            }
+            screenReady = true;
+            if (screenLoader) {
+                screenLoader.classList.add('is-hidden');
+            }
+        }
+
+        function setConnectionState(state, label) {
+            if (deviceChip) {
+                deviceChip.dataset.state = state;
+            }
+            if (chipLabel && label) {
+                chipLabel.textContent = label;
+            }
+            if (!screenReady) {
+                if (state === 'reconnecting') {
+                    setLoaderCopy('正在恢复连接', label || '重新连接…');
+                } else if (state === 'offline') {
+                    setLoaderCopy('连接异常', label || '请检查设备');
+                } else if (state === 'connecting') {
+                    setLoaderCopy('正在连接设备', label || '等待画面…');
+                }
+            }
+        }
+
+        const useWebCodecs = H264CanvasPlayer.isSupported();
+        let displayElement = useWebCodecs ? canvasElement : fallbackVideo;
+        if (useWebCodecs) {
+            canvasElement.classList.remove('is-hidden');
+            fallbackVideo.classList.remove('is-active');
+        } else {
+            canvasElement.classList.add('is-hidden');
+            fallbackVideo.classList.add('is-active');
+        }
+
+        let input = null;
+        let frameCount = 0;
+        let audioFrameCount = 0;
+        let iconsBound = false;
+        let mediaConnected = false;
+        let controlConnected = false;
+        let audioUnlocked = false;
+        let sessionToken = null;
+        let mediaWs = null;
+        let controlWs = null;
+        let connectionGeneration = 0;
+        let mediaWidth = 0;
+        let mediaHeight = 0;
+
+        // Declared before requestAudioUnlock (used by toolbar / gesture handlers).
+        // Safari / iOS 17+ use WebCodecs AudioDecoder — stay on WebAudio, no JMuxer fallback.
+        const ua = navigator.userAgent || '';
+        const isIOS = /iPhone|iPad|iPod/i.test(ua)
+            || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        const isSafari = (/Safari/i.test(ua) || isIOS)
+            && !/Chrome|Chromium|CriOS|FxiOS|EdgiOS/i.test(ua);
+        const isAndroidMobile = /Android/i.test(ua) && /Mobile/i.test(ua);
+        const webAudioAvailable = AacWebAudioPlayer.isSupported();
+        const preferElementAudio = !webAudioAvailable
+            || (isAndroidMobile && !isDesktopView);
+        let useWebAudio = audioEnabled && !preferElementAudio && webAudioAvailable;
+        let webAudioPlayer = useWebAudio ? new AacWebAudioPlayer() : null;
+        if (webAudioPlayer && isSafari) {
+            webAudioPlayer.setKeeperElement(audioElement);
+        }
+        if (useWebAudio && !isSafari) {
+            audioElement.muted = true;
+            audioElement.pause();
+        } else if (!useWebAudio) {
+            audioElement.muted = false;
+        }
+        let audioJmuxer = null;
+        let lastAudioCatchupAt = 0;
+        let lastAudioPlayAttemptAt = 0;
+
+        function ensureAudioJmuxer() {
+            if (!audioEnabled || audioJmuxer) {
+                return audioJmuxer;
+            }
+            audioJmuxer = new JMuxer({
+                node: 'audio-player',
+                mode: 'audio',
+                flushingTime: isIOS ? 100 : 50,
+                clearBuffer: !isIOS,
+                maxDelay: isIOS ? 2800 : 1200,
+                debug: false,
+                onReady: () => console.log('audio player ready (jmuxer)', isIOS ? 'ios' : 'default'),
+                onError: (err) => console.error('Audio JMuxer error:', err)
+            });
+            return audioJmuxer;
+        }
+
+        function aacFrameDurationMs(audioConfig) {
+            const parsed = AudioParser.parseAudioSpecificConfig(audioConfig);
+            const rates = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+            const rate = rates[parsed.samplingFrequencyIndex] || 48000;
+            return Math.round(1024 / rate * 1000);
+        }
+
+        function requestAudioUnlock() {
+            if (!audioEnabled) {
+                return;
+            }
+            if (useWebAudio && webAudioPlayer) {
+                try {
+                    if (navigator.audioSession) {
+                        navigator.audioSession.type = 'ambient';
+                    }
+                } catch (e) {}
+                webAudioPlayer.unlockSync();
+                const first = !audioUnlocked;
+                audioUnlocked = true;
+                if (first) {
+                    showKeyboardHint('声音已映射到本机');
+                }
+                webAudioPlayer.unlock().then((ok) => {
+                    if (!ok) {
+                        console.warn('WebAudio unlock pending — tap again if still silent');
+                    }
+                });
+                return;
+            }
+            if (audioElement) {
+                audioElement.muted = false;
+                audioElement.volume = 1;
+                const playPromise = audioElement.play();
+                if (playPromise && typeof playPromise.then === 'function') {
+                    playPromise.then(() => {
+                        const first = !audioUnlocked;
+                        audioUnlocked = true;
+                        if (first) {
+                            showKeyboardHint('声音已映射到本机');
+                        }
+                    }).catch((e) => console.warn('audio element play:', e));
+                } else {
+                    audioUnlocked = true;
+                }
+            }
+        }
+
+        function resumeAudioIfNeeded() {
+            if (!audioEnabled || document.hidden) {
+                return;
+            }
+            if (useWebAudio && webAudioPlayer) {
+                webAudioPlayer.resume().then((ok) => {
+                    if (ok) {
+                        audioUnlocked = true;
+                    }
+                }).catch(() => {});
+                return;
+            }
+            if (audioElement && audioUnlocked) {
+                audioElement.muted = false;
+                audioElement.play().catch(() => {});
+            }
+        }
+
+        function createKeyPacket(action, keycode) {
+            const buffer = new ArrayBuffer(14);
+            const view = new DataView(buffer);
+            view.setUint8(0, 0);
+            view.setUint8(1, action);
+            view.setInt32(2, keycode, false);
+            view.setInt32(6, 0, false);
+            view.setInt32(10, 0, false);
+            return new Uint8Array(buffer);
+        }
+
+        function emitControl(data) {
+            if (!controlWs || controlWs.readyState !== WebSocket.OPEN) {
+                if (mediaConnected && sessionToken && isSocketOpen(mediaWs)) {
+                    if (isSocketBusy(controlWs)) {
+                        return false;
+                    }
+                    scheduleEnsureConnections(50);
+                    updateStatus('控制通道未连接，正在重连…');
+                    return false;
+                }
+                if (mediaConnected || lastPresentedAt || lastMediaPacketAt) {
+                    forceReconnect('control missing on input', { bypassCooldown: true });
+                } else {
+                    scheduleEnsureConnections(50);
+                }
+                if (!controlWs || controlWs.readyState !== WebSocket.OPEN) {
+                    return false;
+                }
+            }
+            try {
+                controlWs.send(data instanceof ArrayBuffer ? data : new Uint8Array(data));
+                return true;
+            } catch (err) {
+                console.warn('control send failed:', err);
+                try { controlWs.close(); } catch (e) {}
+                controlWs = null;
+                controlConnected = false;
+                scheduleEnsureConnections(50);
+                return false;
+            }
+        }
+
+        function sendKeyPress(keycode) {
+            const okDown = emitControl(createKeyPacket(0, keycode));
+            const okUp = emitControl(createKeyPacket(1, keycode));
+            return okDown && okUp;
+        }
+
+        function toggleLockScreen() {
+            sendKeyPress(26);
+        }
+
+        function updateAudioToggleIcon() {
+            const symbol = document.getElementById('audio-toggle-symbol');
+            const btn = document.getElementById('audio-toggle-icon');
+            if (!symbol || !btn) {
+                return;
+            }
+            if (audioEnabled) {
+                symbol.innerHTML = '<use href="#i-vol-on"/>';
+                btn.title = '声音已映射到本机（点击关闭）';
+                btn.setAttribute('data-tip', '声音已映射到本机');
+                btn.classList.add('is-active');
+            } else {
+                symbol.innerHTML = '<use href="#i-vol-off"/>';
+                btn.title = '开启本机声音映射';
+                btn.setAttribute('data-tip', '开启本机声音');
+                btn.classList.remove('is-active');
+            }
+        }
+
+        // Quality/audio switches reload the page. Before reloading: (1) mark so
+        // the reloaded page skips the disguise gate, and (2) tell the server not
+        // to auto-lock the phone during this switch teardown.
+        function reloadForSwitch() {
+            try { sessionStorage.setItem('scrcpySkipGate', '1'); } catch (e) {}
+            try {
+                if (controlWs && controlWs.readyState === WebSocket.OPEN) {
+                    controlWs.send('suppress-lock');
+                }
+            } catch (e) {}
+            try {
+                if (mediaWs && mediaWs.readyState === WebSocket.OPEN) {
+                    mediaWs.send('suppress-lock');
+                }
+            } catch (e) {}
+            // Small delay so the message flushes before the socket closes.
+            setTimeout(() => location.reload(), 90);
+        }
+
+        function toggleAudioPlayback() {
+            const nextEnabled = !audioEnabled;
+            // MSE 降级路径或音频管线未建时，用整页重载安全重建（平滑切换只在 WebCodecs 可靠）。
+            if (!useWebCodecs || (nextEnabled && !audioParser)) {
+                saveAudioEnabled(nextEnabled);
+                reloadForSwitch();
+                return;
+            }
+            // 常规情况：管线已存在，平滑切换（不重载、不黑屏，保留最后一帧）。
+            audioEnabled = nextEnabled;
+            saveAudioEnabled(nextEnabled);
+            updateAudioToggleIcon();
+            if (audioEnabled) {
+                requestAudioUnlock();
+                showKeyboardHint('声音已开启');
+            } else {
+                showKeyboardHint('声音已关闭');
+            }
+            quietSwitch = true;
+            if (quietSwitchTimer) {
+                clearTimeout(quietSwitchTimer);
+            }
+            quietSwitchTimer = setTimeout(() => {
+                quietSwitch = false;
+                quietSwitchTimer = null;
+                if (!screenReady) {
+                    showScreenLoader('正在切换', '重新拉流…');
+                }
+            }, 6000);
+            forceReconnect('audio toggle ' + (nextEnabled ? 'on' : 'off'),
+                { bypassCooldown: true, force: true });
+        }
+
+        function updateKeyboardToggleIcon() {
+            const btn = document.getElementById('keyboard-toggle-icon');
+            if (!btn) {
+                return;
+            }
+            btn.style.display = '';
+            if (keyboardEnabled) {
+                btn.title = '键盘输入（已开启，点击关闭）';
+                btn.setAttribute('data-tip', '键盘开');
+                btn.classList.add('is-active');
+            } else {
+                btn.title = '键盘输入（已关闭，点击开启）';
+                btn.setAttribute('data-tip', '键盘关');
+                btn.classList.remove('is-active');
+            }
+        }
+
+        function getKeyboardMappingHint() {
+            if (!isDesktopView || !keyboardEnabled) {
+                return '';
+            }
+            return '键盘映射已开启，点击画面后可打字（支持拼音）';
+        }
+
+        function updateInitialKeyboardHint() {
+            const hint = getKeyboardMappingHint();
+            if (hint) {
+                showKeyboardHint(hint);
+            }
+        }
+
+        function showKeyboardHint(text) {
+            if (!keyboardHint) {
+                return;
+            }
+            keyboardHint.textContent = text;
+            keyboardHint.classList.add('is-visible');
+            clearTimeout(showKeyboardHint._timer);
+            showKeyboardHint._timer = setTimeout(() => {
+                keyboardHint.classList.remove('is-visible');
+            }, 2000);
+        }
+
+        function setKeyboardFocused(active) {
+            displayElement.classList.toggle('keyboard-focused', active);
+            if (deviceFrame) {
+                deviceFrame.classList.toggle('kb-focus', active);
+            }
+        }
+
+        function toggleKeyboardInput() {
+            keyboardEnabled = !keyboardEnabled;
+            saveKeyboardEnabled(keyboardEnabled);
+            updateKeyboardToggleIcon();
+            if (!isDesktopView) {
+                // Mobile: summon the system keyboard via the hidden textarea.
+                if (keyboardEnabled) {
+                    activateMobileKeyboard();
+                    showKeyboardHint('键盘已开启，直接输入即可');
+                } else {
+                    deactivateMobileKeyboard();
+                    showKeyboardHint('键盘已关闭');
+                }
+                return;
+            }
+            if (input) {
+                input.setKeyboardMappingEnabled(keyboardEnabled);
+                if (keyboardEnabled) {
+                    input.ensureKeyboardInputFocused();
+                }
+            }
+            const hint = getKeyboardMappingHint();
+            if (hint) {
+                showKeyboardHint(hint);
+            } else {
+                showKeyboardHint('键盘映射已关闭');
+            }
+        }
+
+        // —— Mobile keyboard: ScrcpyInput skips keyboard binding on touch
+        // devices, so drive a hidden contenteditable surface here and reuse
+        // the packet builders on the input instance. A contenteditable div
+        // (not a form field) keeps Chrome/iOS from showing the autofill bar
+        // (password / card / address buttons) above the keyboard. ——
+        const mobileKbSurface = document.getElementById('mobile-kb-surface') || mobileKeyboardInput;
+        let mobileKbBound = false;
+        let mobileKbComposing = false;
+
+        function mobileKbRead() {
+            return mobileKbSurface.isContentEditable
+                ? (mobileKbSurface.textContent || '')
+                : (mobileKbSurface.value || '');
+        }
+
+        function mobileKbClear() {
+            if (mobileKbSurface.isContentEditable) {
+                mobileKbSurface.textContent = '';
+            } else {
+                mobileKbSurface.value = '';
+            }
+        }
+
+        function bindMobileKeyboard() {
+            if (mobileKbBound || !mobileKbSurface) {
+                return;
+            }
+            mobileKbBound = true;
+            const el = mobileKbSurface;
+            el.addEventListener('compositionstart', () => {
+                mobileKbComposing = true;
+            });
+            el.addEventListener('compositionend', (event) => {
+                mobileKbComposing = false;
+                const committed = event.data || mobileKbRead();
+                if (committed && input) {
+                    input.sendText(committed);
+                }
+                mobileKbClear();
+            });
+            el.addEventListener('input', (event) => {
+                if (mobileKbComposing) {
+                    return;
+                }
+                if (event.inputType === 'deleteContentBackward') {
+                    if (input) {
+                        input.sendKeyCode(null, 0, 67);
+                        input.sendKeyCode(null, 1, 67);
+                    }
+                    mobileKbClear();
+                    return;
+                }
+                const value = mobileKbRead();
+                if (event.inputType === 'insertLineBreak'
+                    || event.inputType === 'insertParagraph'
+                    || value === '\n') {
+                    if (input) {
+                        input.sendKeyCode(null, 0, 66);
+                        input.sendKeyCode(null, 1, 66);
+                    }
+                    mobileKbClear();
+                    return;
+                }
+                if (value && input) {
+                    input.sendText(value);
+                }
+                mobileKbClear();
+            });
+            el.addEventListener('keydown', (event) => {
+                if (event.isComposing || event.keyCode === 229) {
+                    return;
+                }
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    if (input) {
+                        input.sendKeyCode(null, 0, 66);
+                        input.sendKeyCode(null, 1, 66);
+                    }
+                    mobileKbClear();
+                } else if (event.key === 'Backspace' && !mobileKbRead()) {
+                    if (input) {
+                        input.sendKeyCode(null, 0, 67);
+                        input.sendKeyCode(null, 1, 67);
+                    }
+                }
+            });
+            el.addEventListener('blur', () => {
+                // User dismissed the system keyboard — reflect it on the button.
+                if (!isDesktopView && keyboardEnabled) {
+                    keyboardEnabled = false;
+                    saveKeyboardEnabled(false);
+                    updateKeyboardToggleIcon();
+                }
+            });
+        }
+
+        function activateMobileKeyboard() {
+            if (!mobileKbSurface) {
+                return;
+            }
+            bindMobileKeyboard();
+            mobileKbClear();
+            // Must run inside the tap gesture for iOS to show the keyboard.
+            mobileKbSurface.focus();
+        }
+
+        function deactivateMobileKeyboard() {
+            if (!mobileKbSurface) {
+                return;
+            }
+            mobileKbClear();
+            mobileKbSurface.blur();
+        }
+
+        function bindIconPressFeedback(el) {
+            const press = () => el.classList.add('is-pressed');
+            const release = () => el.classList.remove('is-pressed');
+            el.addEventListener('pointerdown', press);
+            el.addEventListener('pointerup', release);
+            el.addEventListener('pointercancel', release);
+            el.addEventListener('pointerleave', release);
+        }
+
+        function applyQualityPreset(preset) {
+            if (!QUALITY_PRESETS[preset] || preset === qualityPreset) {
+                if (qualitySelect) {
+                    qualitySelect.value = qualityPreset;
+                }
+                syncQualitySeg();
+                return;
+            }
+            saveQualityPreset(preset);
+            qualityPreset = preset;
+            qualityConfig = QUALITY_PRESETS[preset];
+            syncQualitySeg();
+            applyPlayerLatencyTuning();
+            setConnectionState('reconnecting', '切换画质…');
+            showKeyboardHint('已切换为「' + qualityConfig.label + '」');
+            // 平滑切换只在 WebCodecs 路径可靠；MSE 降级路径换流后视频元素不易恢复，
+            // 改用整页重载（那条路径本来就这么工作，稳妥）。
+            if (!useWebCodecs) {
+                reloadForSwitch();
+                return;
+            }
+            // 平滑切换：不重载页面，后台重连新画质，期间保留最后一帧（不弹黑色加载页）。
+            quietSwitch = true;
+            if (quietSwitchTimer) {
+                clearTimeout(quietSwitchTimer);
+            }
+            // 兜底：6 秒仍无新画面则恢复正常加载提示。
+            quietSwitchTimer = setTimeout(() => {
+                quietSwitch = false;
+                quietSwitchTimer = null;
+                if (!screenReady) {
+                    showScreenLoader('正在切换画质', '重新拉流…');
+                }
+            }, 6000);
+            forceReconnect('quality switch to ' + preset, { bypassCooldown: true, force: true });
+        }
+
+        function closeToolsPanel() {
+            const root = document.querySelector('.app');
+            if (root) {
+                root.classList.remove('tools-open');
+            }
+        }
+
+        // —— 截屏：触发谷歌2手机自带的系统截屏，图片保存在手机自己的相册里。——
+        let screenshotBusy = false;
+        function takeScreenshot() {
+            if (screenshotBusy) {
+                return;
+            }
+            screenshotBusy = true;
+            showKeyboardHint('正在截屏…');
+            fetch('/api/screenshot?ts=' + Date.now(), { cache: 'no-store' })
+                .then((resp) => resp.json().catch(() => ({ ok: resp.ok })))
+                .then((data) => {
+                    if (data && data.ok) {
+                        showKeyboardHint('已截屏，保存到手机相册');
+                    } else {
+                        showKeyboardHint('截屏失败');
+                    }
+                })
+                .catch((e) => {
+                    console.warn('screenshot failed:', e);
+                    showKeyboardHint('截屏失败，请确认已连接手机');
+                })
+                .finally(() => {
+                    screenshotBusy = false;
+                });
+        }
+
+        function bindToolbarIcons() {
+            if (iconsBound) {
+                return;
+            }
+            iconsBound = true;
+
+            document.querySelectorAll('.icon-btn').forEach(bindIconPressFeedback);
+
+            document.getElementById('power-icon').addEventListener('click', (event) => {
+                event.preventDefault();
+                requestAudioUnlock();
+                toggleLockScreen();
+                closeToolsPanel();
+                event.currentTarget.blur();
+            });
+
+            document.getElementById('audio-toggle-icon').addEventListener('click', (event) => {
+                event.preventDefault();
+                // If already enabled, this click is a good unlock gesture before reload-off.
+                if (audioEnabled) {
+                    requestAudioUnlock();
+                }
+                toggleAudioPlayback();
+                event.currentTarget.blur();
+            });
+
+            document.getElementById('keyboard-toggle-icon').addEventListener('click', (event) => {
+                event.preventDefault();
+                requestAudioUnlock();
+                toggleKeyboardInput();
+                closeToolsPanel();
+                event.currentTarget.blur();
+            });
+
+            const screenshotBtn = document.getElementById('screenshot-icon');
+            if (screenshotBtn) {
+                screenshotBtn.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    takeScreenshot();
+                    closeToolsPanel();
+                    event.currentTarget.blur();
+                });
+            }
+
+            if (qualitySelect) {
+                qualitySelect.addEventListener('change', (event) => {
+                    applyQualityPreset(event.target.value);
+                });
+            }
+
+            if (qualitySeg) {
+                qualitySeg.querySelectorAll('button').forEach((btn) => {
+                    btn.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        applyQualityPreset(btn.dataset.q);
+                    });
+                });
+            }
+
+            function bindKeyIcon(id, keycode) {
+                const el = document.getElementById(id);
+                if (!el) {
+                    return;
+                }
+                el.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    requestAudioUnlock();
+                    sendKeyPress(keycode);
+                    event.currentTarget.blur();
+                });
+            }
+
+            bindKeyIcon('volume-down-icon', 25);
+            bindKeyIcon('volume-up-icon', 24);
+            bindKeyIcon('back-icon', 4);
+            bindKeyIcon('home-icon', 3);
+            bindKeyIcon('menu-icon', 187);
+
+            // Mobile floating tools button: draggable; a tap (no drag) toggles
+            // the panel, which pops up next to wherever the ball sits.
+            const fabTools = document.getElementById('fab-tools');
+            const appRoot = document.querySelector('.app');
+            if (fabTools && appRoot) {
+                const FAB_POS_KEY = 'fabToolsPos';
+                const fabPanel = document.querySelector('.topbar');
+                const FAB_MARGIN = 8;
+
+                function applyFabPos(left, top) {
+                    const w = fabTools.offsetWidth || 48;
+                    const h = fabTools.offsetHeight || 48;
+                    const x = Math.min(Math.max(left, FAB_MARGIN), window.innerWidth - w - FAB_MARGIN);
+                    const y = Math.min(Math.max(top, FAB_MARGIN), window.innerHeight - h - FAB_MARGIN);
+                    fabTools.style.left = x + 'px';
+                    fabTools.style.top = y + 'px';
+                    fabTools.style.right = 'auto';
+                    fabTools.style.bottom = 'auto';
+                }
+
+                function saveFabPos() {
+                    const rect = fabTools.getBoundingClientRect();
+                    try {
+                        localStorage.setItem(FAB_POS_KEY, JSON.stringify({
+                            xr: rect.left / window.innerWidth,
+                            yr: rect.top / window.innerHeight,
+                        }));
+                    } catch (e) {}
+                }
+
+                function loadFabPos() {
+                    try {
+                        const saved = JSON.parse(localStorage.getItem(FAB_POS_KEY) || 'null');
+                        if (saved && isFinite(saved.xr) && isFinite(saved.yr)) {
+                            applyFabPos(saved.xr * window.innerWidth, saved.yr * window.innerHeight);
+                        }
+                    } catch (e) {}
+                }
+
+                function placePanelNearFab() {
+                    if (!fabPanel) {
+                        return;
+                    }
+                    const fr = fabTools.getBoundingClientRect();
+                    const pw = fabPanel.offsetWidth || 260;
+                    const ph = fabPanel.offsetHeight || 150;
+                    const left = Math.min(
+                        Math.max(fr.right - pw, FAB_MARGIN),
+                        window.innerWidth - pw - FAB_MARGIN
+                    );
+                    let top = fr.top - ph - FAB_MARGIN;
+                    if (top < FAB_MARGIN) {
+                        top = Math.min(fr.bottom + FAB_MARGIN, window.innerHeight - ph - FAB_MARGIN);
+                    }
+                    fabPanel.style.left = left + 'px';
+                    fabPanel.style.top = top + 'px';
+                    fabPanel.style.right = 'auto';
+                    fabPanel.style.bottom = 'auto';
+                }
+
+                let dragPointerId = null;
+                let dragMoved = false;
+                let dragStartX = 0;
+                let dragStartY = 0;
+                let dragOrigLeft = 0;
+                let dragOrigTop = 0;
+
+                let longPressTimer = null;
+                let longPressFired = false;
+
+                fabTools.addEventListener('pointerdown', (event) => {
+                    dragPointerId = event.pointerId;
+                    dragMoved = false;
+                    longPressFired = false;
+                    const rect = fabTools.getBoundingClientRect();
+                    dragStartX = event.clientX;
+                    dragStartY = event.clientY;
+                    dragOrigLeft = rect.left;
+                    dragOrigTop = rect.top;
+                    try { fabTools.setPointerCapture(event.pointerId); } catch (e) {}
+                    // Long-press (hold ~650ms without moving) opens diagnostics.
+                    if (longPressTimer) {
+                        clearTimeout(longPressTimer);
+                    }
+                    longPressTimer = setTimeout(() => {
+                        longPressTimer = null;
+                        if (dragMoved) {
+                            return;
+                        }
+                        longPressFired = true;
+                        appRoot.classList.remove('tools-open');
+                        showDiagnostics();
+                    }, 650);
+                });
+
+                fabTools.addEventListener('pointermove', (event) => {
+                    if (dragPointerId !== event.pointerId) {
+                        return;
+                    }
+                    const dx = event.clientX - dragStartX;
+                    const dy = event.clientY - dragStartY;
+                    if (!dragMoved && Math.abs(dx) < 6 && Math.abs(dy) < 6) {
+                        return;
+                    }
+                    if (!dragMoved) {
+                        dragMoved = true;
+                        appRoot.classList.remove('tools-open');
+                        if (longPressTimer) {
+                            clearTimeout(longPressTimer);
+                            longPressTimer = null;
+                        }
+                    }
+                    applyFabPos(dragOrigLeft + dx, dragOrigTop + dy);
+                    event.preventDefault();
+                });
+
+                const endFabDrag = (event) => {
+                    if (dragPointerId !== event.pointerId) {
+                        return;
+                    }
+                    dragPointerId = null;
+                    if (longPressTimer) {
+                        clearTimeout(longPressTimer);
+                        longPressTimer = null;
+                    }
+                    if (dragMoved) {
+                        saveFabPos();
+                    }
+                };
+                fabTools.addEventListener('pointerup', endFabDrag);
+                fabTools.addEventListener('pointercancel', endFabDrag);
+
+                fabTools.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    if (dragMoved) {
+                        // This click is the tail of a drag — not a toggle.
+                        dragMoved = false;
+                        return;
+                    }
+                    if (longPressFired) {
+                        // The press already opened diagnostics; don't also toggle.
+                        longPressFired = false;
+                        return;
+                    }
+                    requestAudioUnlock();
+                    if (!appRoot.classList.contains('tools-open')) {
+                        placePanelNearFab();
+                    }
+                    appRoot.classList.toggle('tools-open');
+                });
+
+                window.addEventListener('resize', () => {
+                    if (fabTools.style.left) {
+                        const rect = fabTools.getBoundingClientRect();
+                        applyFabPos(rect.left, rect.top);
+                    }
+                    if (appRoot.classList.contains('tools-open')) {
+                        placePanelNearFab();
+                    }
+                });
+
+                document.addEventListener('pointerdown', (event) => {
+                    if (!appRoot.classList.contains('tools-open')) {
+                        return;
+                    }
+                    if (fabTools.contains(event.target)) {
+                        return;
+                    }
+                    if (fabPanel && fabPanel.contains(event.target)) {
+                        return;
+                    }
+                    appRoot.classList.remove('tools-open');
+                }, true);
+
+                loadFabPos();
+            }
+        }
+
+        bindToolbarIcons();
+        updateAudioToggleIcon();
+        updateKeyboardToggleIcon();
+        updateInitialKeyboardHint();
+
+        function naluForJmuxer(nalu) {
+            if (nalu.length < 5) {
+                return nalu;
+            }
+            if (nalu[0] === 0 && nalu[1] === 0 && (nalu[2] === 1 || (nalu[2] === 0 && nalu[3] === 1))) {
+                return nalu;
+            }
+            const len = ((nalu[0] << 24) | (nalu[1] << 16) | (nalu[2] << 8) | nalu[3]) >>> 0;
+            if (len + 4 === nalu.length) {
+                const out = new Uint8Array(4 + len);
+                out[0] = 0;
+                out[1] = 0;
+                out[2] = 0;
+                out[3] = 1;
+                out.set(nalu.subarray(4), 4);
+                return out;
+            }
+            return nalu;
+        }
+
+        const canvasPlayer = useWebCodecs ? new H264CanvasPlayer(canvasElement) : null;
+        let jmuxer = null;
+        let pendingVideoSentAt = 0;
+
+        function applyPlayerLatencyTuning() {
+            if (canvasPlayer) {
+                canvasPlayer._staleFrameMs = qualityConfig.staleFrameMs || 150;
+                canvasPlayer._maxDecodeQueue = qualityConfig.maxDecodeQueue || 3;
+            }
+        }
+        applyPlayerLatencyTuning();
+
+        function createVideoJmuxer() {
+            return new JMuxer({
+                node: 'fallback-player',
+                mode: 'video',
+                flushingTime: 0,
+                fps: qualityConfig.jmuxerFps,
+                clearBuffer: true,
+                maxDelay: qualityConfig.maxDelay,
+                onReady: () => updateStatus('player ready (jmuxer fallback)'),
+                onError: (err) => {
+                    console.error('JMuxer error:', err);
+                    updateStatus('MSE Error: ' + (err.name || err.message || err));
+                }
+            });
+        }
+
+        function bindWebAudioErrors() {
+            if (!webAudioPlayer) {
+                return;
+            }
+            webAudioPlayer.onError = (err) => {
+                console.error('WebAudio decode error:', err);
+                showKeyboardHint('音频解码异常，请重连或再点一次画面');
+            };
+        }
+
+        function resetStreamState() {
+            frameCount = 0;
+            audioFrameCount = 0;
+            lastPresentedAt = 0;
+            lastMediaPacketAt = 0;
+            lastVideoPacketAt = 0;
+            pendingVideoSentAt = 0;
+            resetLatencyDisplay();
+            screenReady = false;
+            mediaWidth = 0;
+            mediaHeight = 0;
+            parser.reset();
+            if (audioParser) {
+                audioParser.reset();
+            }
+            if (canvasPlayer) {
+                canvasPlayer.destroy();
+                canvasPlayer.waitingForKey = true;
+                canvasPlayer.configured = false;
+                canvasPlayer.width = 0;
+                canvasPlayer.height = 0;
+                canvasPlayer.frameIndex = 0;
+                canvasPlayer._lastDecodedPts = null;
+                canvasPlayer._lastDecodeSentAt = 0;
+                applyPlayerLatencyTuning();
+                if (typeof canvasPlayer._bindDisplayResize === 'function') {
+                    canvasPlayer._bindDisplayResize();
+                }
+            }
+            if (jmuxer) {
+                try { jmuxer.destroy(); } catch (e) {}
+                jmuxer = null;
+            }
+            if (!useWebCodecs) {
+                jmuxer = createVideoJmuxer();
+            }
+            if (audioJmuxer) {
+                try { audioJmuxer.destroy(); } catch (e) {}
+                audioJmuxer = null;
+            }
+            if (useWebAudio) {
+                if (!webAudioPlayer) {
+                    webAudioPlayer = new AacWebAudioPlayer();
+                    bindWebAudioErrors();
+                    if (isSafari) {
+                        webAudioPlayer.setKeeperElement(audioElement);
+                    }
+                } else {
+                    webAudioPlayer.softReset();
+                }
+                if (audioElement && !isSafari) {
+                    audioElement.muted = true;
+                    audioElement.pause();
+                }
+            } else if (webAudioPlayer) {
+                webAudioPlayer.destroy();
+                webAudioPlayer = null;
+            }
+            if (fallbackVideo) {
+                fallbackVideo.removeAttribute('src');
+                try { fallbackVideo.load(); } catch (e) {}
+            }
+            if (audioElement && !(useWebAudio && isSafari)) {
+                audioElement.pause();
+                audioElement.removeAttribute('src');
+                try { audioElement.load(); } catch (e) {}
+            }
+        }
+
+        function bumpConnectionGeneration() {
+            connectionGeneration += 1;
+            return connectionGeneration;
+        }
+
+        function isCurrentConnection(gen) {
+            return gen === connectionGeneration;
+        }
+        if (!useWebCodecs) {
+            jmuxer = createVideoJmuxer();
+        }
+
+        if (webAudioPlayer) {
+            bindWebAudioErrors();
+        }
+
+        console.log('video backend:', useWebCodecs ? 'WebCodecs VideoDecoder + Canvas' : 'JMuxer MSE fallback');
+        if (audioEnabled) {
+            console.log('audio backend:', useWebAudio ? 'WebCodecs WebAudio' : 'JMuxer element',
+                isSafari ? '(Safari)' : isIOS ? '(iOS)' : '',
+                'secure=', !!window.isSecureContext,
+                'mode=', useWebAudio && AacWebAudioPlayer._preferWorklet() ? 'worklet' : 'buffer',
+                'enabled=', audioEnabled);
+            if (!useWebAudio) {
+                ensureAudioJmuxer();
+            }
+            showKeyboardHint(isDesktopView ? '点击画面开启声音' : '点一下画面开启声音');
+            const unlockOnce = () => {
+                requestAudioUnlock();
+            };
+            document.addEventListener('pointerdown', unlockOnce, true);
+            document.addEventListener('touchstart', unlockOnce, { capture: true, passive: true });
+        } else {
+            showKeyboardHint('声音映射已关闭，点喇叭开启');
+        }
+
+        function toUint8Array(data) {
+            if (data instanceof Uint8Array) return data;
+            if (data instanceof ArrayBuffer) return new Uint8Array(data);
+            if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+            if (Array.isArray(data)) return Uint8Array.from(data);
+            if (data && data.data) return Uint8Array.from(data.data);
+            return new Uint8Array(data);
+        }
+
+        function updateStatus(text) {
+            const status = document.getElementById('status');
+            if (status) {
+                status.style.display = 'block';
+                status.textContent = text;
+            }
+
+            const lower = String(text || '').toLowerCase();
+            if (lower.indexOf('error') !== -1 || text.indexOf('离线') !== -1) {
+                setConnectionState('offline', '连接异常');
+            } else if (
+                text.indexOf('连接已断开') !== -1
+                || text.indexOf('重新连接') !== -1
+                || text.indexOf('正在重连') !== -1
+                || text.indexOf('会话失效') !== -1
+            ) {
+                setConnectionState('reconnecting', '重新连接…');
+            } else if (
+                lower.indexOf('connecting') !== -1
+                || text.indexOf('正在连接') !== -1
+            ) {
+                setConnectionState('connecting', '正在连接…');
+            } else if (
+                lower.indexOf('connected') !== -1
+                || text.indexOf('已连接') !== -1
+            ) {
+                // Don't paint green until both sockets are actually open.
+                refreshConnectionChip();
+            }
+        }
+
+        function syncDeviceAspect(width, height) {
+            if (!width || !height) {
+                return;
+            }
+            document.documentElement.style.setProperty('--device-ar', width + ' / ' + height);
+            document.documentElement.style.setProperty('--device-ar-ratio', String(width / height));
+        }
+
+        function frameChromeMetrics(frameW) {
+            const isMobile = window.matchMedia('(max-width: 768px)').matches;
+            if (isMobile) {
+                return { radius: 0, bezel: 0 };
+            }
+            const radius = Math.max(8, Math.min(12, Math.round(frameW * 0.026)));
+            const bezel = Math.max(2, Math.min(3, Math.round(frameW * 0.006)));
+            return { radius, bezel };
+        }
+
+        function layoutDeviceFrame() {
+            const wrapper = videoWrapper;
+            const frame = deviceFrame;
+            if (!wrapper || !frame) {
+                return;
+            }
+            const vw = mediaWidth || 0;
+            const vh = mediaHeight || 0;
+            if (vw <= 0 || vh <= 0) {
+                return;
+            }
+            const ar = vw / vh;
+            const wrapperStyle = getComputedStyle(wrapper);
+            const padX = parseFloat(wrapperStyle.paddingLeft) + parseFloat(wrapperStyle.paddingRight);
+            const padY = parseFloat(wrapperStyle.paddingTop) + parseFloat(wrapperStyle.paddingBottom);
+            const availW = wrapper.clientWidth - padX;
+            const availH = wrapper.clientHeight - padY;
+            if (availW < 16 || availH < 16) {
+                return;
+            }
+
+            let frameW = availW;
+            let frameH = Math.round(frameW / ar);
+            if (frameH > availH) {
+                frameH = availH;
+                frameW = Math.round(frameH * ar);
+            }
+
+            const chrome = frameChromeMetrics(frameW);
+            frame.style.setProperty('--device-frame-radius', chrome.radius + 'px');
+            frame.style.setProperty('--device-bezel', chrome.bezel + 'px');
+            frame.style.width = frameW + 'px';
+            frame.style.height = frameH + 'px';
+            document.documentElement.style.setProperty('--device-frame-w', frameW + 'px');
+
+            requestAnimationFrame(() => {
+                if (canvasPlayer && typeof canvasPlayer._syncDisplaySize === 'function') {
+                    canvasPlayer._syncDisplaySize();
+                }
+                const slot = frame.querySelector('.screen-slot');
+                if (slot && fallbackVideo) {
+                    fallbackVideo.style.width = '100%';
+                    fallbackVideo.style.height = '100%';
+                }
+            });
+        }
+
+        function syncDisplayLayout(width, height) {
+            if (!width || !height) {
+                return;
+            }
+            syncDeviceAspect(width, height);
+            layoutDeviceFrame();
+        }
+
+        let layoutObserver = null;
+        function bindLayoutObserver() {
+            if (!videoWrapper || typeof ResizeObserver === 'undefined') {
+                return;
+            }
+            if (layoutObserver) {
+                layoutObserver.disconnect();
+            }
+            layoutObserver = new ResizeObserver(() => {
+                layoutDeviceFrame();
+            });
+            layoutObserver.observe(videoWrapper);
+        }
+        bindLayoutObserver();
+        window.addEventListener('resize', () => layoutDeviceFrame());
+
+        function initInput(width, height) {
+            mediaWidth = width;
+            mediaHeight = height;
+            syncDisplayLayout(width, height);
+            if (input) {
+                input.resizeScreen(width, height);
+                input.tryInitialFocus();
+                return;
+            }
+
+            function input_data_cb(data) {
+                emitControl(new Uint8Array(data));
+            }
+
+            input = new ScrcpyInput(input_data_cb, displayElement, width, height, {
+                wrapperElement: videoWrapper,
+                mobileInputElement: mobileKeyboardInput,
+                keyboardMappingEnabled: isDesktopView && keyboardEnabled,
+                getMediaSize: () => ({ width: mediaWidth || width, height: mediaHeight || height }),
+                onUserGesture: requestAudioUnlock,
+                onFocusChange: (active) => {
+                    setKeyboardFocused(active && keyboardEnabled);
+                    if (active && keyboardEnabled && isDesktopView) {
+                        showKeyboardHint('可直接打字，支持拼音输入法');
+                    }
+                }
+            });
+
+            input.setKeyboardMappingEnabled(isDesktopView && keyboardEnabled);
+            if (isDesktopView && keyboardEnabled) {
+                input.ensureKeyboardInputFocused();
+            }
+        }
+
+        const parser = new VideoParser(({ type, data, pts }) => {
+            if (type === 'nalu') {
+                frameCount++;
+                if (frameCount === 1 || frameCount % 120 === 0) {
+                    const w = mediaWidth || (canvasPlayer && canvasPlayer.width) || fallbackVideo.videoWidth || 0;
+                    const h = mediaHeight || (canvasPlayer && canvasPlayer.height) || fallbackVideo.videoHeight || 0;
+                    updateStatus('connected, frames: ' + frameCount + ' (' + w + 'x' + h + ')');
+                }
+                if (canvasPlayer) {
+                    canvasPlayer.decodeNalu(data, pts, pendingVideoSentAt);
+                } else if (jmuxer) {
+                    jmuxer.feed({ video: naluForJmuxer(data) });
+                }
+            } else if (type === 'init') {
+                if (canvasPlayer) {
+                    if (!canvasPlayer.configure(data.sps, data.pps)) {
+                        console.warn('WebCodecs configure failed, consider refreshing');
+                    }
+                } else if (jmuxer) {
+                    jmuxer.feed({ video: naluForJmuxer(data.sps) });
+                    jmuxer.feed({ video: naluForJmuxer(data.pps) });
+                }
+            } else if (type === 'screen_size') {
+                initInput(data.width, data.height);
+            } else if (type === 'size_change') {
+                mediaWidth = data.width;
+                mediaHeight = data.height;
+                syncDisplayLayout(data.width, data.height);
+                if (input) {
+                    input.resizeScreen(data.width, data.height);
+                }
+            }
+        });
+
+        let audioParser = audioEnabled ? new AudioParser(({ type, data, pts }) => {
+            if (type === 'disabled') {
+                showKeyboardHint('设备端音频不可用');
+                updateStatus('audio disabled by device');
+                return;
+            }
+            if (type === 'config') {
+                console.log('audio config received, bytes=', data && data.length);
+                if (useWebAudio && webAudioPlayer) {
+                    if (!webAudioPlayer.configure(data)) {
+                        console.error('WebAudio configure failed');
+                        showKeyboardHint('音频配置失败，请重连');
+                    } else {
+                        if (audioElement && !isSafari) {
+                            audioElement.muted = true;
+                            audioElement.pause();
+                        }
+                        if (audioUnlocked) {
+                            webAudioPlayer.unlockSync();
+                        }
+                    }
+                } else {
+                    ensureAudioJmuxer();
+                }
+            } else if (type === 'frame') {
+                audioFrameCount++;
+                if (audioFrameCount === 1 && !audioUnlocked && useWebAudio) {
+                    showKeyboardHint(isDesktopView ? '点击画面开启声音' : '点一下画面开启声音');
+                }
+                if (audioFrameCount === 1 || audioFrameCount % 200 === 0) {
+                    const ctxState = webAudioPlayer && webAudioPlayer.audioContext
+                        ? webAudioPlayer.audioContext.state : 'n/a';
+                    console.log('audio frames:', audioFrameCount,
+                        'unlocked=', audioUnlocked,
+                        'gesture=', !!(webAudioPlayer && webAudioPlayer.isUnlocked()),
+                        'ctx=', ctxState,
+                        'configured=', !!(webAudioPlayer && webAudioPlayer.configured),
+                        'backend=', useWebAudio ? 'webcodecs' : 'jmuxer',
+                        'elPaused=', !!(audioElement && audioElement.paused),
+                        'elMuted=', !!(audioElement && audioElement.muted));
+                }
+                if (useWebAudio && webAudioPlayer) {
+                    webAudioPlayer.decodeFrame(data, pts);
+                }
+                if ((!useWebAudio || !webAudioPlayer) && audioParser.audioConfig) {
+                    ensureAudioJmuxer();
+                    if (!audioJmuxer) {
+                        return;
+                    }
+                    const adts = AudioParser.wrapAdts(data, audioParser.audioConfig);
+                    const duration = aacFrameDurationMs(audioParser.audioConfig);
+                    audioJmuxer.feed({ audio: adts, duration: duration });
+                    const now = Date.now();
+                    if (audioElement && audioUnlocked) {
+                        audioElement.muted = false;
+                        audioElement.volume = 1;
+                        if (audioElement.paused && now - lastAudioPlayAttemptAt > 400) {
+                            lastAudioPlayAttemptAt = now;
+                            audioElement.play().catch(() => {});
+                        } else if (!isIOS && !audioElement.paused && now - lastAudioCatchupAt > 3000) {
+                            try {
+                                const buf = audioElement.buffered;
+                                if (buf && buf.length) {
+                                    const end = buf.end(buf.length - 1);
+                                    const lag = end - audioElement.currentTime;
+                                    if (lag > 1.0) {
+                                        lastAudioCatchupAt = now;
+                                        audioElement.currentTime = Math.max(0, end - 0.2);
+                                    }
+                                }
+                            } catch (e) {}
+                        }
+                    }
+                }
+            } else if (type === 'codec') {
+                console.log('audio codec id:', data && data.codecId
+                    ? ('0x' + Number(data.codecId).toString(16))
+                    : data);
+            }
+        }, false) : null;
+
+        function wsUrl(path, params) {
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const qs = new URLSearchParams(params).toString();
+            return proto + '//' + location.host + path + (qs ? '?' + qs : '');
+        }
+
+        function isSocketOpen(ws) {
+            return !!(ws && ws.readyState === WebSocket.OPEN);
+        }
+
+        function isSocketBusy(ws) {
+            return !!(ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING));
+        }
+
+        function closeSocketQuiet(ws) {
+            if (!ws) {
+                return;
+            }
+            try { ws.onopen = null; } catch (e) {}
+            try { ws.onmessage = null; } catch (e) {}
+            try { ws.onerror = null; } catch (e) {}
+            try { ws.onclose = null; } catch (e) {}
+            try { ws.close(); } catch (e) {}
+        }
+
+        function refreshConnectionChip() {
+            if (intentionalTeardown || reconnecting) {
+                setConnectionState('reconnecting', '恢复连接…');
+                return;
+            }
+            if (isSocketOpen(mediaWs) && isSocketOpen(controlWs)) {
+                setConnectionState('connected', '已连接');
+                return;
+            }
+            if (isSocketBusy(mediaWs) || isSocketBusy(controlWs)) {
+                setConnectionState('connecting', '连接中…');
+                return;
+            }
+            setConnectionState('offline', '未连接');
+        }
+
+        let reconnectTimer = null;
+        let reconnecting = false;
+        let intentionalTeardown = false;
+        // 切换画质时的“安静重连”：后台换流，期间保留最后一帧、不显示黑色加载页。
+        let quietSwitch = false;
+        let quietSwitchTimer = null;
+        let lastPresentedAt = 0;
+        let lastMediaPacketAt = 0;
+        let lastForceReconnectAt = 0;
+        let reconnectAttempt = 0;
+        let keepaliveTimer = null;
+        let stallWatchTimer = null;
+        let hiddenAt = 0;
+        let recoverDebounceTimer = null;
+        let mediaConnectStartedAt = 0;
+        let controlConnectStartedAt = 0;
+        const STALL_MS = 4000;
+        const PACKET_STALL_MS = 5000;
+        const KEYFRAME_WAIT_MS = 2500;
+        const FORCE_RECONNECT_COOLDOWN_MS = 2500;
+        const KEEPALIVE_MS = 8000;
+        const LATENCY_PING_MS = 2000;
+        let latencyPingSentAt = 0;
+        let latencyTimer = null;
+        let pingLatencyMs = null;
+        const HIDDEN_FORCE_MS = 4000;
+        const CONNECT_TIMEOUT_MS = 8000;
+        const MAX_BACKOFF_MS = 4000;
+        // Liveness is judged by ping/pong: a silent media stream is NORMAL
+        // while the remote screen is static (scrcpy sends nothing then).
+        const HEALTH_STALL_MS = 9000;
+        let lastPongAt = 0;
+        let lastVideoPacketAt = 0;
+
+        // —— Reconnect diagnostics: ring buffer of recent reconnect events so a
+        // user on a phone (no dev console) can report exactly what fired. ——
+        const diagLog = [];
+        const DIAG_MAX = 40;
+        let lastConnectedAt = 0;
+        let diagReconnectTotal = 0;
+        let diagSessionStart = Date.now();
+
+        function pad2(n) { return (n < 10 ? '0' : '') + n; }
+        function diagClock(d) {
+            return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+        }
+
+        function recordDiag(kind, detail) {
+            const now = Date.now();
+            const upMs = lastConnectedAt ? (now - lastConnectedAt) : 0;
+            diagLog.unshift({
+                t: diagClock(new Date(now)),
+                kind: kind,
+                detail: detail || '',
+                up: lastConnectedAt ? Math.round(upMs / 1000) : null,
+            });
+            if (diagLog.length > DIAG_MAX) {
+                diagLog.length = DIAG_MAX;
+            }
+            if (kind === 'reconnect') {
+                diagReconnectTotal += 1;
+            }
+        }
+
+        function kindLabel(kind) {
+            return {
+                'reconnect': '重连',
+                'connected': '已连接',
+                'media-close': '媒体断开',
+                'control-close': '控制断开',
+            }[kind] || kind;
+        }
+
+        function buildDiagText() {
+            const runMin = Math.round((Date.now() - diagSessionStart) / 60000);
+            const upNow = (lastConnectedAt && mediaConnected)
+                ? Math.round((Date.now() - lastConnectedAt) / 1000) + '秒'
+                : '未连接';
+            const lines = [];
+            lines.push('=== web-scrcpy 连接诊断 ===');
+            lines.push('运行 ' + runMin + ' 分钟 | 重连 ' + diagReconnectTotal + ' 次 | 当前已连 ' + upNow);
+            lines.push('画质 ' + qualityConfig.label + ' (' + qualityConfig.max_size + 'p/'
+                + qualityConfig.video_bit_rate.slice(0, -6) + 'M) | 延迟 '
+                + (chipLatency ? chipLatency.textContent : '--'));
+            lines.push('UA ' + navigator.userAgent);
+            lines.push('--- 事件（新→旧）---');
+            if (!diagLog.length) {
+                lines.push('（暂无记录。发生重连或断开后会显示在这里。）');
+            } else {
+                for (const e of diagLog) {
+                    const up = e.up != null ? ('  连了' + e.up + 's') : '';
+                    lines.push(e.t + '  ' + kindLabel(e.kind) + up + '  ' + e.detail);
+                }
+            }
+            return lines.join('\n');
+        }
+
+        function renderDiagnostics() {
+            const ta = document.getElementById('diag-text');
+            if (ta) {
+                ta.value = buildDiagText();
+            }
+        }
+
+        function showDiagnostics() {
+            const overlay = document.getElementById('diag-overlay');
+            if (!overlay) {
+                return;
+            }
+            renderDiagnostics();
+            overlay.classList.add('is-open');
+        }
+
+        function hideDiagnostics() {
+            const overlay = document.getElementById('diag-overlay');
+            if (overlay) {
+                overlay.classList.remove('is-open');
+            }
+        }
+
+        function copyDiagnostics() {
+            const ta = document.getElementById('diag-text');
+            const btn = document.getElementById('diag-copy');
+            if (!ta) {
+                return;
+            }
+            const text = ta.value;
+            const flash = (ok) => {
+                if (!btn) {
+                    return;
+                }
+                btn.textContent = ok ? '已复制' : '请手动全选复制';
+                btn.classList.toggle('copied', ok);
+                setTimeout(() => {
+                    btn.textContent = '复制';
+                    btn.classList.remove('copied');
+                }, 1800);
+            };
+            // execCommand path works over plain HTTP where Clipboard API is blocked.
+            let ok = false;
+            try {
+                ta.focus();
+                ta.setSelectionRange(0, text.length);
+                ok = document.execCommand('copy');
+            } catch (e) {
+                ok = false;
+            }
+            if (ok) {
+                flash(true);
+                return;
+            }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(() => flash(true)).catch(() => flash(false));
+            } else {
+                flash(false);
+            }
+        }
+
+        (function bindDiagnostics() {
+            const overlay = document.getElementById('diag-overlay');
+            const closeBtn = document.getElementById('diag-close');
+            const copyBtn = document.getElementById('diag-copy');
+            // touchend already fired the action + ate the gesture; skip the
+            // synthetic click that follows so it doesn't run twice on iOS.
+            const bindTapAction = (el, action) => {
+                if (!el) return;
+                let touchHandled = false;
+                el.addEventListener('touchend', (e) => {
+                    e.preventDefault();
+                    touchHandled = true;
+                    action();
+                }, { passive: false });
+                el.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (touchHandled) { touchHandled = false; return; }
+                    action();
+                });
+            };
+            bindTapAction(closeBtn, hideDiagnostics);
+            bindTapAction(copyBtn, copyDiagnostics);
+            if (overlay) {
+                overlay.addEventListener('click', (e) => {
+                    if (e.target === overlay) {
+                        hideDiagnostics();
+                    }
+                });
+            }
+        })();
+
+        function markFramePresented() {
+            lastPresentedAt = Date.now();
+            reconnectAttempt = 0;
+            // 新画面已出，切换画质完成，清除“安静切换”标志。
+            if (quietSwitch) {
+                quietSwitch = false;
+                if (quietSwitchTimer) {
+                    clearTimeout(quietSwitchTimer);
+                    quietSwitchTimer = null;
+                }
+            }
+            hideScreenLoader();
+            layoutDeviceFrame();
+        }
+
+        function markMediaPacket() {
+            lastMediaPacketAt = Date.now();
+        }
+
+        function reconnectDelayMs() {
+            if (reconnectAttempt <= 1) {
+                return 100;
+            }
+            const base = 200 * Math.pow(1.6, Math.min(reconnectAttempt - 1, 6));
+            return Math.min(MAX_BACKOFF_MS, Math.round(base));
+        }
+
+        function scheduleEnsureConnections(delayMs) {
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+            }
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                ensureConnections();
+            }, delayMs == null ? 200 : delayMs);
+        }
+
+        function stopKeepalive() {
+            if (keepaliveTimer) {
+                clearInterval(keepaliveTimer);
+                keepaliveTimer = null;
+            }
+        }
+
+        function formatPingLatency(ms) {
+            if (ms != null && isFinite(ms)) {
+                return Math.max(0, Math.round(ms)) + ' ms';
+            }
+            return '-- ms';
+        }
+
+        function updateLatencyDisplay() {
+            if (!chipLatency) {
+                return;
+            }
+            const hasPing = pingLatencyMs != null && isFinite(pingLatencyMs);
+            chipLatency.textContent = formatPingLatency(pingLatencyMs);
+            chipLatency.title = hasPing
+                ? ('延迟 ' + Math.max(0, Math.round(pingLatencyMs)) + ' ms')
+                : '延迟';
+        }
+
+        function handlePong() {
+            lastPongAt = Date.now();
+            if (!latencyPingSentAt) {
+                return;
+            }
+            pingLatencyMs = lastPongAt - latencyPingSentAt;
+            latencyPingSentAt = 0;
+            updateLatencyDisplay();
+        }
+
+        function sendLatencyPing() {
+            const ws = isSocketOpen(controlWs) ? controlWs : (isSocketOpen(mediaWs) ? mediaWs : null);
+            if (!ws) {
+                pingLatencyMs = null;
+                updateLatencyDisplay();
+                return;
+            }
+            try {
+                latencyPingSentAt = Date.now();
+                ws.send('ping');
+            } catch (e) {
+                latencyPingSentAt = 0;
+            }
+        }
+
+        function startLatencyProbe() {
+            stopLatencyProbe();
+            sendLatencyPing();
+            latencyTimer = setInterval(sendLatencyPing, LATENCY_PING_MS);
+        }
+
+        function stopLatencyProbe() {
+            if (latencyTimer) {
+                clearInterval(latencyTimer);
+                latencyTimer = null;
+            }
+            latencyPingSentAt = 0;
+        }
+
+        function resetLatencyDisplay() {
+            stopLatencyProbe();
+            pingLatencyMs = null;
+            updateLatencyDisplay();
+        }
+
+        function startKeepalive() {
+            stopKeepalive();
+            keepaliveTimer = setInterval(() => {
+                if (intentionalTeardown) {
+                    return;
+                }
+                // Keep pinging even while hidden so mobile browsers are less likely
+                // to freeze the socket; recovery still runs on visibility return.
+                if (isSocketOpen(mediaWs)) {
+                    try {
+                        mediaWs.send('ping');
+                    } catch (e) {
+                        if (!document.hidden) {
+                            forceReconnect('keepalive media failed', { bypassCooldown: true });
+                        }
+                        return;
+                    }
+                }
+                if (isSocketOpen(controlWs)) {
+                    try {
+                        controlWs.send('ping');
+                    } catch (e) {
+                        try { controlWs.close(); } catch (err) {}
+                        controlWs = null;
+                        controlConnected = false;
+                        if (!document.hidden && mediaConnected && sessionToken) {
+                            scheduleEnsureConnections(100);
+                        }
+                    }
+                } else if (!document.hidden && mediaConnected && sessionToken && !isSocketBusy(controlWs)) {
+                    scheduleEnsureConnections(100);
+                }
+            }, KEEPALIVE_MS);
+        }
+
+        function stopStallWatch() {
+            if (stallWatchTimer) {
+                clearInterval(stallWatchTimer);
+                stallWatchTimer = null;
+            }
+        }
+
+        function startStallWatch() {
+            stopStallWatch();
+            stallWatchTimer = setInterval(() => {
+                if (document.hidden || reconnecting || intentionalTeardown) {
+                    return;
+                }
+                const now = Date.now();
+
+                // Hung CONNECTING sockets block all reconnect paths — kill them.
+                if (mediaWs && mediaWs.readyState === WebSocket.CONNECTING
+                    && mediaConnectStartedAt && now - mediaConnectStartedAt > CONNECT_TIMEOUT_MS) {
+                    console.warn('media connect timeout');
+                    closeSocketQuiet(mediaWs);
+                    mediaWs = null;
+                    mediaConnected = false;
+                    forceReconnect('media connect timeout', { bypassCooldown: true });
+                    return;
+                }
+                if (controlWs && controlWs.readyState === WebSocket.CONNECTING
+                    && controlConnectStartedAt && now - controlConnectStartedAt > CONNECT_TIMEOUT_MS) {
+                    console.warn('control connect timeout');
+                    closeSocketQuiet(controlWs);
+                    controlWs = null;
+                    controlConnected = false;
+                    scheduleEnsureConnections(100);
+                    return;
+                }
+
+                if (!isSocketOpen(mediaWs)) {
+                    if (!isSocketBusy(mediaWs)) {
+                        scheduleEnsureConnections(100);
+                    }
+                    return;
+                }
+                if (!isSocketOpen(controlWs) && sessionToken && !isSocketBusy(controlWs)) {
+                    scheduleEnsureConnections(100);
+                    refreshConnectionChip();
+                }
+
+                // Video packets flowing but no frames drawn → decoder stuck waiting for key.
+                if (canvasPlayer && lastVideoPacketAt
+                    && (!lastPresentedAt || now - lastPresentedAt > KEYFRAME_WAIT_MS)
+                    && now - lastVideoPacketAt < 1500) {
+                    canvasPlayer.waitingForKey = true;
+                }
+
+                // A silent media stream is NORMAL (static remote screen).
+                // Judge link liveness by ping/pong heartbeat instead.
+                const lastHealthAt = Math.max(lastPongAt || 0, lastMediaPacketAt || 0);
+                if (lastHealthAt && now - lastHealthAt > HEALTH_STALL_MS) {
+                    forceReconnect('link dead: no pong for ' + (now - lastHealthAt) + 'ms');
+                    return;
+                }
+
+                // Decoder wedged: video packets keep arriving but nothing gets
+                // drawn for a long time (keyframes come every second).
+                if (useWebCodecs && lastPresentedAt && lastVideoPacketAt
+                    && now - lastPresentedAt > STALL_MS + PACKET_STALL_MS
+                    && now - lastVideoPacketAt < 1500) {
+                    forceReconnect('decoder wedged: packets flow but no frames');
+                }
+            }, 800);
+        }
+
+        let forceReconnectTimer = null;
+
+        function forceReconnect(reason, opts) {
+            if (typeof gateUnlocked !== 'undefined' && !gateUnlocked) {
+                return;
+            }
+            if (typeof linkProbeTimer !== 'undefined' && linkProbeTimer) {
+                clearTimeout(linkProbeTimer);
+                linkProbeTimer = null;
+            }
+            const options = opts || {};
+            const now = Date.now();
+            if (intentionalTeardown && !options.force) {
+                return;
+            }
+            if (!options.bypassCooldown && now - lastForceReconnectAt < FORCE_RECONNECT_COOLDOWN_MS) {
+                scheduleEnsureConnections(FORCE_RECONNECT_COOLDOWN_MS - (now - lastForceReconnectAt) + 50);
+                return;
+            }
+            lastForceReconnectAt = now;
+            reconnectAttempt += 1;
+            recordDiag('reconnect', reason || 'stall');
+            console.warn('force reconnect:', reason || 'stall', 'attempt', reconnectAttempt);
+            if (quietSwitch) {
+                // 切换画质/声音触发，已是“保留最后一帧”模式，不弹加载页。
+            } else if (useWebCodecs) {
+                // 网络断线重连：保留最后一帧（画面定格而非黑屏），
+                // 若数秒内没恢复再显示加载页。WebCodecs 的 canvas 会保留上一帧。
+                quietSwitch = true;
+                if (quietSwitchTimer) {
+                    clearTimeout(quietSwitchTimer);
+                }
+                quietSwitchTimer = setTimeout(() => {
+                    quietSwitch = false;
+                    quietSwitchTimer = null;
+                    if (!screenReady) {
+                        showScreenLoader('正在恢复连接', '重新拉流…');
+                    }
+                }, 4000);
+                setConnectionState('reconnecting', '重连中…');
+            } else {
+                // MSE 降级：帧不保留，直接显示加载页。
+                showScreenLoader('正在恢复连接', '画面卡住，重新拉流…');
+                setConnectionState('reconnecting', '恢复连接…');
+                updateStatus('画面卡住，正在恢复连接…');
+            }
+            intentionalTeardown = true;
+            reconnecting = true;
+            stopKeepalive();
+            stopStallWatch();
+            if (input && typeof input.releasePointerAndTouch === 'function') {
+                input.releasePointerAndTouch();
+            }
+            if (input && typeof input.releasePressedKeys === 'function') {
+                input.releasePressedKeys();
+            }
+            teardownSockets();
+            resetStreamState();
+            const delay = Math.max(options.delayMs || 0, reconnectDelayMs());
+            if (forceReconnectTimer) {
+                clearTimeout(forceReconnectTimer);
+            }
+            forceReconnectTimer = setTimeout(() => {
+                forceReconnectTimer = null;
+                intentionalTeardown = false;
+                reconnecting = false;
+                if (!document.hidden) {
+                    ensureConnections();
+                }
+            }, Math.max(450, delay));
+        }
+
+        function openControlSocket(token, connGen) {
+            if (!token || !isCurrentConnection(connGen)) {
+                return;
+            }
+            if (isSocketBusy(controlWs)) {
+                return;
+            }
+            const ws = new WebSocket(wsUrl('/ws/control', { token }));
+            controlWs = ws;
+            controlConnectStartedAt = Date.now();
+            ws.binaryType = 'arraybuffer';
+            ws.onmessage = (event) => {
+                if (controlWs !== ws || !isCurrentConnection(connGen)) {
+                    return;
+                }
+                if (typeof event.data !== 'string') {
+                    return;
+                }
+                if (event.data === 'pong') {
+                    handlePong();
+                    return;
+                }
+            };
+            ws.onopen = () => {
+                if (controlWs !== ws || !isCurrentConnection(connGen)) {
+                    return;
+                }
+                controlConnected = true;
+                controlConnectStartedAt = 0;
+                reconnecting = false;
+                console.log('control websocket open');
+                refreshConnectionChip();
+                startLatencyProbe();
+                updateStatus(
+                    'connected [' + qualityConfig.label + ' '
+                    + qualityConfig.max_size + 'p/' + qualityConfig.max_fps + 'fps'
+                    + ', ' + (useWebCodecs ? 'WebCodecs' : 'MSE') + ']'
+                    + (audioEnabled ? ', video+audio' : ', video')
+                );
+            };
+            ws.onclose = (event) => {
+                if (controlWs === ws) {
+                    controlConnected = false;
+                    controlWs = null;
+                    controlConnectStartedAt = 0;
+                }
+                if (!isCurrentConnection(connGen) || intentionalTeardown) {
+                    return;
+                }
+                if (event && event.code !== 4001) {
+                    const clean = event && event.wasClean ? 'clean' : 'abrupt';
+                    recordDiag('control-close', 'code=' + (event.code != null ? event.code : '?') + ' ' + clean);
+                }
+                refreshConnectionChip();
+                if (event && event.code === 4001) {
+                    sessionToken = null;
+                    mediaConnected = false;
+                    if (mediaWs) {
+                        closeSocketQuiet(mediaWs);
+                        mediaWs = null;
+                    }
+                    updateStatus('会话失效，正在重新连接…');
+                    forceReconnect('control 4001 expired', { bypassCooldown: true });
+                    return;
+                }
+                if (mediaConnected && sessionToken) {
+                    scheduleEnsureConnections(200);
+                }
+            };
+            ws.onerror = () => {
+                console.warn('control websocket error');
+            };
+        }
+
+        function readUint64Ms(bytes, offset) {
+            if (offset + 8 > bytes.length) {
+                return 0;
+            }
+            const view = new DataView(bytes.buffer, bytes.byteOffset + offset, 8);
+            if (typeof view.getBigUint64 === 'function') {
+                const raw = view.getBigUint64(0, false);
+                if (raw > 9007199254740991n) {
+                    return 0;
+                }
+                return Number(raw);
+            }
+            const hi = view.getUint32(0, false);
+            const lo = view.getUint32(4, false);
+            const value = hi * 0x100000000 + lo;
+            return value > 9007199254740991 ? 0 : value;
+        }
+
+        function handleMediaBinary(buffer) {
+            markMediaPacket();
+            const bytes = toUint8Array(buffer);
+            let offset = 0;
+            while (offset + 5 <= bytes.length) {
+                const type = bytes[offset];
+                const size = ((bytes[offset + 1] << 24) | (bytes[offset + 2] << 16)
+                    | (bytes[offset + 3] << 8) | bytes[offset + 4]) >>> 0;
+                if (size <= 0 || offset + 5 + size > bytes.length) {
+                    break;
+                }
+                const payload = bytes.subarray(offset + 5, offset + 5 + size);
+                if (type === 1) {
+                    lastVideoPacketAt = Date.now();
+                    let videoPayload = payload;
+                    pendingVideoSentAt = 0;
+                    if (payload.length >= 8) {
+                        pendingVideoSentAt = readUint64Ms(payload, 0);
+                        videoPayload = payload.subarray(8);
+                    }
+                    parser.appendData(videoPayload);
+                } else if (type === 2 && audioParser) {
+                    audioParser.appendData(payload);
+                }
+                offset += 5 + size;
+            }
+        }
+
+        function teardownSockets() {
+            bumpConnectionGeneration();
+            stopKeepalive();
+            stopStallWatch();
+            resetLatencyDisplay();
+            sessionToken = null;
+            mediaConnected = false;
+            controlConnected = false;
+            mediaConnectStartedAt = 0;
+            controlConnectStartedAt = 0;
+            if (controlWs) {
+                closeSocketQuiet(controlWs);
+                controlWs = null;
+            }
+            if (mediaWs) {
+                closeSocketQuiet(mediaWs);
+                mediaWs = null;
+            }
+        }
+
+        function connectMedia() {
+            if (isSocketBusy(mediaWs)) {
+                return;
+            }
+            const connGen = connectionGeneration;
+            if (quietSwitch) {
+                // 切换画质：保留最后一帧，只在状态芯片提示，不弹黑色加载页。
+                setConnectionState('reconnecting', '切换画质…');
+            } else {
+                setConnectionState('connecting', '连接中…');
+                updateStatus('connecting…');
+                showScreenLoader('正在连接设备', '建立媒体通道…');
+            }
+            const params = {
+                audio_enabled: audioEnabled ? 'true' : 'false',
+                quality: qualityPreset,
+                video_bit_rate: qualityConfig.video_bit_rate,
+                max_size: qualityConfig.max_size,
+                max_fps: qualityConfig.max_fps,
+            };
+            const ws = new WebSocket(wsUrl('/ws/media', params));
+            mediaWs = ws;
+            mediaConnectStartedAt = Date.now();
+            ws.binaryType = 'arraybuffer';
+
+            ws.onopen = () => {
+                if (mediaWs !== ws || !isCurrentConnection(connGen)) {
+                    return;
+                }
+                mediaConnected = true;
+                mediaConnectStartedAt = 0;
+                reconnecting = false;
+                lastPongAt = Date.now();
+                lastConnectedAt = Date.now();
+                recordDiag('connected', '媒体已连接');
+                startKeepalive();
+                startStallWatch();
+                startLatencyProbe();
+                refreshConnectionChip();
+                layoutDeviceFrame();
+                if (useWebAudio && webAudioPlayer && audioUnlocked) {
+                    webAudioPlayer.resume().catch(() => {});
+                }
+            };
+
+            ws.onmessage = (event) => {
+                if (mediaWs !== ws || !isCurrentConnection(connGen)) {
+                    return;
+                }
+                if (typeof event.data === 'string') {
+                    if (event.data === 'ping') {
+                        return;
+                    }
+                    if (event.data === 'pong') {
+                        handlePong();
+                        return;
+                    }
+                    let msg;
+                    try {
+                        msg = JSON.parse(event.data);
+                    } catch (e) {
+                        return;
+                    }
+                    if (msg.type === 'session') {
+                        sessionToken = msg.token;
+                        openControlSocket(sessionToken, connGen);
+                        if (canvasPlayer) {
+                            canvasPlayer.waitingForKey = true;
+                        }
+                        refreshConnectionChip();
+                        updateStatus(
+                            'connected [' + qualityConfig.label + ' '
+                            + qualityConfig.max_size + 'p/' + qualityConfig.max_fps + 'fps'
+                            + ', ' + (useWebCodecs ? 'WebCodecs' : 'MSE') + ']'
+                            + (audioEnabled ? ', video+audio' : ', video')
+                        );
+                        console.log('session', msg);
+                    } else if (msg.type === 'error') {
+                        updateStatus('error: ' + msg.message);
+                        setConnectionState('offline', '连接失败');
+                        forceReconnect('media error: ' + msg.message, { bypassCooldown: true, force: true, delayMs: 700 });
+                    }
+                    return;
+                }
+                handleMediaBinary(event.data);
+            };
+
+            ws.onclose = (event) => {
+                if (mediaWs !== ws) {
+                    return;
+                }
+                if (!intentionalTeardown) {
+                    const code = event && event.code != null ? event.code : '?';
+                    const clean = event && event.wasClean ? 'clean' : 'abrupt';
+                    recordDiag('media-close', 'code=' + code + ' ' + clean);
+                }
+                stopKeepalive();
+                stopStallWatch();
+                resetLatencyDisplay();
+                mediaConnected = false;
+                mediaWs = null;
+                mediaConnectStartedAt = 0;
+                sessionToken = null;
+                if (controlWs) {
+                    closeSocketQuiet(controlWs);
+                    controlWs = null;
+                }
+                controlConnected = false;
+                controlConnectStartedAt = 0;
+                reconnecting = false;
+                if (!isCurrentConnection(connGen) || intentionalTeardown) {
+                    return;
+                }
+                setConnectionState('reconnecting', '重连中…');
+                updateStatus('连接已断开，正在自动重连…');
+                scheduleEnsureConnections(reconnectDelayMs());
+            };
+
+            ws.onerror = () => {
+                if (!isCurrentConnection(connGen)) {
+                    return;
+                }
+                console.warn('media websocket error');
+            };
+        }
+
+        function ensureConnections() {
+            if (typeof gateUnlocked !== 'undefined' && !gateUnlocked) {
+                return;
+            }
+            if (document.hidden || intentionalTeardown || reconnecting) {
+                return;
+            }
+            if (!isSocketOpen(mediaWs) && !isSocketBusy(mediaWs)) {
+                reconnecting = true;
+                teardownSockets();
+                resetStreamState();
+                connectMedia();
+                return;
+            }
+            if (mediaConnected && sessionToken && !isSocketOpen(controlWs) && !isSocketBusy(controlWs)) {
+                openControlSocket(sessionToken, connectionGeneration);
+            }
+        }
+
+        // Prefer "actually drawn" heartbeat over "packet received".
+        if (canvasPlayer) {
+            canvasPlayer.onFramePresented = markFramePresented;
+        } else if (fallbackVideo) {
+            fallbackVideo.addEventListener('timeupdate', markFramePresented);
+            fallbackVideo.addEventListener('playing', markFramePresented);
+        }
+
+        // —— Disguise gate: hold the real connection until the hidden corner
+        // is tapped 3 times. Every page load re-arms it (no persistence). ——
+        const offlineGate = document.getElementById('offline-gate');
+        const offlineHotspot = document.getElementById('offline-hotspot');
+        let gateUnlocked = false;
+
+        // Render the Chrome T-Rex from a pixel matrix (X = filled), 20 cols wide.
+        (function buildOfflineDino() {
+            const svg = document.getElementById('offline-dino-svg');
+            if (!svg) {
+                return;
+            }
+            const rows = [
+                '............XXXXX...',
+                '............XXXXXX..',
+                '............XXXXXX..',
+                '............XXXXXX..',
+                '............X.XXXX..',
+                '............XXXXXX..',
+                '............XXXXXX..',
+                '............XXX.....',
+                '.X..........XXXX....',
+                '.X.........XXXXX....',
+                '.XX.......XXXXXX....',
+                '.XX......XXXXXXXX...',
+                '.XXX....XXXXXXXXX.XX',
+                '.XXXX..XXXXXXXXXX...',
+                '.XXXXXXXXXXXXXXX....',
+                '..XXXXXXXXXXXXXX....',
+                '...XXXXXXXXXXXX.....',
+                '....XXXXXXXXXX......',
+                '....XXX....XXX......',
+                '....XX.....XX.......',
+                '....XX.....XX.......',
+                '....XXX....XXX......',
+            ];
+            const cell = 2;
+            const ns = 'http://www.w3.org/2000/svg';
+            const frag = document.createDocumentFragment();
+            for (let y = 0; y < rows.length; y++) {
+                const row = rows[y];
+                let x = 0;
+                while (x < row.length) {
+                    if (row[x] === 'X') {
+                        let run = 1;
+                        while (x + run < row.length && row[x + run] === 'X') {
+                            run++;
+                        }
+                        const r = document.createElementNS(ns, 'rect');
+                        r.setAttribute('x', x * cell);
+                        r.setAttribute('y', y * cell);
+                        r.setAttribute('width', run * cell);
+                        r.setAttribute('height', cell);
+                        r.setAttribute('fill', 'currentColor');
+                        frag.appendChild(r);
+                        x += run;
+                    } else {
+                        x++;
+                    }
+                }
+            }
+            svg.appendChild(frag);
+        })();
+
+        // Fake "重新加载" button: behaves like the real one (reloads the page),
+        // which just re-shows the offline gate. It never unlocks.
+        const offlineRetry = document.getElementById('offline-retry');
+        if (offlineRetry) {
+            offlineRetry.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                location.reload();
+            });
+        }
+
+        function startRealSession() {
+            if (gateUnlocked) {
+                return;
+            }
+            gateUnlocked = true;
+            if (offlineGate) {
+                offlineGate.classList.add('is-gone');
+            }
+            connectMedia();
+        }
+
+        // Switching quality/audio reloads the page; that reload should NOT
+        // re-show the dino gate (the user already unlocked this session).
+        let skipGateOnce = false;
+        try {
+            skipGateOnce = sessionStorage.getItem('scrcpySkipGate') === '1';
+            if (skipGateOnce) {
+                sessionStorage.removeItem('scrcpySkipGate');
+            }
+        } catch (e) {}
+
+        if (offlineGate && offlineHotspot && !skipGateOnce) {
+            const TAP_WINDOW_MS = 2500;
+            const TAPS_NEEDED = 3;
+            let tapCount = 0;
+            let firstTapAt = 0;
+            const onHotspotTap = (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const now = Date.now();
+                if (now - firstTapAt > TAP_WINDOW_MS) {
+                    tapCount = 0;
+                    firstTapAt = now;
+                }
+                tapCount += 1;
+                if (tapCount >= TAPS_NEEDED) {
+                    tapCount = 0;
+                    startRealSession();
+                }
+            };
+            // pointerup fires once per tap on both touch and mouse.
+            offlineHotspot.addEventListener('pointerup', onHotspotTap);
+            // iOS Safari's double-tap-zoom gesture recognizer watches raw touch
+            // events, not pointerup — preventDefault() there doesn't stop it.
+            // Cancel it directly on touchend so 3 quick taps never zoom the page.
+            offlineHotspot.addEventListener('touchend', (e) => { e.preventDefault(); }, { passive: false });
+        } else {
+            // Gate markup missing, or a quality/audio switch — skip straight in.
+            startRealSession();
+        }
+
+        // After a long background suspend the socket may still report OPEN yet
+        // be a zombie (iOS freezes WebSockets in background). Rather than tear a
+        // possibly-healthy link down, ping it and reconnect ONLY if no pong
+        // arrives — this removes the jarring reconnect every time you return.
+        const LINK_PROBE_MS = 1800;
+        let linkProbeTimer = null;
+
+        function probeLinkThenMaybeReconnect(source, awayMs) {
+            const probeStart = Date.now();
+            let sent = false;
+            if (isSocketOpen(controlWs)) {
+                try { controlWs.send('ping'); sent = true; } catch (e) {}
+            }
+            if (isSocketOpen(mediaWs)) {
+                try { mediaWs.send('ping'); sent = true; } catch (e) {}
+            }
+            if (!sent) {
+                forceReconnect(source + ' probe-nosocket away=' + awayMs + 'ms',
+                    { bypassCooldown: true, delayMs: 450 });
+                return;
+            }
+            setConnectionState('connecting', '检查连接…');
+            if (linkProbeTimer) {
+                clearTimeout(linkProbeTimer);
+            }
+            linkProbeTimer = setTimeout(() => {
+                linkProbeTimer = null;
+                if (document.hidden || intentionalTeardown) {
+                    return;
+                }
+                if (lastPongAt > probeStart) {
+                    // Pong came back → link is alive, keep it (no reconnect).
+                    scheduleEnsureConnections(50);
+                    refreshConnectionChip();
+                } else {
+                    forceReconnect(source + ' probe-timeout away=' + awayMs + 'ms',
+                        { bypassCooldown: true, delayMs: 300 });
+                }
+            }, LINK_PROBE_MS);
+        }
+
+        function recoverFromBackground(source) {
+            if (!gateUnlocked) {
+                return;
+            }
+            if (document.hidden) {
+                return;
+            }
+            // Debounce focus+visibility+pageshow firing together.
+            if (recoverDebounceTimer) {
+                clearTimeout(recoverDebounceTimer);
+            }
+            recoverDebounceTimer = setTimeout(() => {
+                recoverDebounceTimer = null;
+                if (document.hidden || intentionalTeardown) {
+                    return;
+                }
+                const awayMs = hiddenAt ? (Date.now() - hiddenAt) : 0;
+                hiddenAt = 0;
+                const now = Date.now();
+                // Ignore spurious focus/pageshow during the very first connect.
+                const hadLiveSession = !!(lastPresentedAt || lastMediaPacketAt || sessionToken);
+                if (!hadLiveSession && awayMs < 500) {
+                    scheduleEnsureConnections(50);
+                    return;
+                }
+                const mediaDead = !isSocketBusy(mediaWs);
+                const controlDead = hadLiveSession && mediaConnected && sessionToken && !isSocketBusy(controlWs);
+                // A silent media stream is normal (static remote screen);
+                // judge liveness by the ping/pong heartbeat instead.
+                const lastHealthAt = Math.max(lastPongAt || 0, lastMediaPacketAt || 0);
+                const linkDead = !!lastHealthAt && (now - lastHealthAt > HEALTH_STALL_MS);
+
+                // Resume playback-side state on every return (cheap, no teardown).
+                if (canvasPlayer) {
+                    canvasPlayer.waitingForKey = true;
+                }
+                if (input && typeof input.releasePointerAndTouch === 'function') {
+                    input.releasePointerAndTouch();
+                }
+                if (input && keyboardEnabled && isDesktopView) {
+                    input.ensureKeyboardInputFocused();
+                }
+                resumeAudioIfNeeded();
+                requestAudioUnlock();
+
+                if (mediaDead || controlDead || linkDead) {
+                    // Clearly broken — reconnect now.
+                    forceReconnect(
+                        source + (mediaDead ? ' media-dead' : '')
+                        + (controlDead ? ' control-dead' : '')
+                        + (linkDead ? ' link-dead' : '')
+                        + (awayMs ? (' away=' + awayMs + 'ms') : ''),
+                        { bypassCooldown: true, delayMs: awayMs >= 5000 ? 600 : 450 }
+                    );
+                    return;
+                }
+
+                if (awayMs >= HIDDEN_FORCE_MS && hadLiveSession) {
+                    // Sockets still look OPEN after a long suspend — they might be
+                    // zombies. Ping first; reconnect only if no pong comes back,
+                    // so a healthy link is never torn down needlessly.
+                    probeLinkThenMaybeReconnect(source, awayMs);
+                } else {
+                    // Short, healthy return — just nudge connections.
+                    scheduleEnsureConnections(50);
+                    refreshConnectionChip();
+                }
+            }, 60);
+        }
+
+        // Browser throttles/suspends WS when tab is hidden; restore on return.
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                hiddenAt = Date.now();
+                return;
+            }
+            recoverFromBackground('visibility');
+        });
+        window.addEventListener('focus', () => {
+            recoverFromBackground('focus');
+        });
+        window.addEventListener('pageshow', () => {
+            recoverFromBackground('pageshow');
+        });
+        window.addEventListener('online', () => {
+            if (!isSocketOpen(mediaWs) || !isSocketOpen(controlWs)) {
+                forceReconnect('network online', { bypassCooldown: true });
+            } else {
+                scheduleEnsureConnections(50);
+            }
+        });
+
+        window.addEventListener('offline', () => {
+            setConnectionState('offline', '网络断开');
+            updateStatus('网络已断开');
+        });
+
+        window.addEventListener('beforeunload', () => {
+            intentionalTeardown = true;
+            stopKeepalive();
+            stopStallWatch();
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+            }
+            if (recoverDebounceTimer) {
+                clearTimeout(recoverDebounceTimer);
+            }
+            if (forceReconnectTimer) {
+                clearTimeout(forceReconnectTimer);
+            }
+            if (linkProbeTimer) {
+                clearTimeout(linkProbeTimer);
+                linkProbeTimer = null;
+            }
+            teardownSockets();
+            resetStreamState();
+            if (canvasPlayer) {
+                canvasPlayer.destroy();
+            }
+        });
+    </script>
+</body>
+
+</html>
