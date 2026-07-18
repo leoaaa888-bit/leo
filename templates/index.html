@@ -643,6 +643,21 @@
         video#fallback-player.is-active { display: block; }
         canvas#player.is-hidden { display: none; }
 
+        /* 切换画质/重连时定格的“最后一帧”快照：盖在画布上、加载页之下，
+           全程遮住手机端 scrcpy 重启造成的黑屏空档，直到新画面真正出来才隐藏。 */
+        #freeze-frame {
+            position: absolute;
+            inset: 0;
+            z-index: 3;
+            width: 100%;
+            height: 100%;
+            object-fit: fill;
+            display: none;
+            background: #000;
+            pointer-events: none;
+        }
+        #freeze-frame.is-active { display: block; }
+
         video.hide-controls::-webkit-media-controls { display: none !important; }
 
         #player:focus,
@@ -1552,6 +1567,7 @@
                             </div>
                             <canvas id="player" tabindex="-1"></canvas>
                             <video id="fallback-player" class="hide-controls" autoplay muted playsinline webkit-playsinline x5-playsinline tabindex="-1"></video>
+                            <img id="freeze-frame" alt="" aria-hidden="true">
                             <div id="keyboard-hint" class="keyboard-hint"></div>
                         </div>
                     </div>
@@ -1755,6 +1771,10 @@
 
         function showScreenLoader(title, sub) {
             screenReady = false;
+            // 一旦真正弹出加载页，就不再需要定格快照，撤掉以防它卡住盖住加载页。
+            if (typeof hideFreezeFrame === 'function') {
+                hideFreezeFrame();
+            }
             if (screenLoader) {
                 screenLoader.classList.remove('is-hidden');
             }
@@ -1999,6 +2019,8 @@
         // to auto-lock the phone during this switch teardown.
         function reloadForSwitch() {
             try { sessionStorage.setItem('scrcpySkipGate', '1'); } catch (e) {}
+            // 重载前定格当前画面，重载后贴回，遮住整页重建的黑屏空档。
+            captureSwitchSnapshot();
             try {
                 if (controlWs && controlWs.readyState === WebSocket.OPEN) {
                     controlWs.send('suppress-lock');
@@ -2031,6 +2053,7 @@
             } else {
                 showKeyboardHint('声音已关闭');
             }
+            showFreezeFrame();
             quietSwitch = true;
             if (quietSwitchTimer) {
                 clearTimeout(quietSwitchTimer);
@@ -2039,9 +2062,10 @@
                 quietSwitch = false;
                 quietSwitchTimer = null;
                 if (!screenReady) {
+                    hideFreezeFrame();
                     showScreenLoader('正在切换', '重新拉流…');
                 }
-            }, 6000);
+            }, 12000);
             forceReconnect('audio toggle ' + (nextEnabled ? 'on' : 'off'),
                 { bypassCooldown: true, force: true });
         }
@@ -2269,19 +2293,22 @@
                 reloadForSwitch();
                 return;
             }
-            // 平滑切换：不重载页面，后台重连新画质，期间保留最后一帧（不弹黑色加载页）。
+            // 平滑切换：不重载页面，后台重连新画质。切换瞬间定格最后一帧盖住画布，
+            // 遮住手机端 scrcpy 重启的空档，全程不闪黑、不弹加载页。
+            showFreezeFrame();
             quietSwitch = true;
             if (quietSwitchTimer) {
                 clearTimeout(quietSwitchTimer);
             }
-            // 兜底：6 秒仍无新画面则恢复正常加载提示。
+            // 兜底：手机端重启偶尔较慢，给足 12 秒；仍无新画面才认定异常、退回加载页。
             quietSwitchTimer = setTimeout(() => {
                 quietSwitch = false;
                 quietSwitchTimer = null;
                 if (!screenReady) {
+                    hideFreezeFrame();
                     showScreenLoader('正在切换画质', '重新拉流…');
                 }
-            }, 6000);
+            }, 12000);
             forceReconnect('quality switch to ' + preset, { bypassCooldown: true, force: true });
         }
 
@@ -2602,6 +2629,79 @@
         const canvasPlayer = useWebCodecs ? new H264CanvasPlayer(canvasElement) : null;
         let jmuxer = null;
         let pendingVideoSentAt = 0;
+
+        // —— 定格“最后一帧”快照 ——
+        // 切画质会在手机端重启 scrcpy（真实存在 2~5 秒无画面空档）。这段时间把
+        // 切换瞬间的画面快照盖在画布上，避免画布因重配分辨率而闪黑、也不弹加载页。
+        const freezeFrameImg = document.getElementById('freeze-frame');
+        function showFreezeFrame() {
+            if (!freezeFrameImg || !canvasElement) {
+                return;
+            }
+            // 画布还没有有效画面（宽高为 0）就没什么可定格的，直接跳过。
+            if (!canvasElement.width || !canvasElement.height) {
+                return;
+            }
+            try {
+                freezeFrameImg.src = canvasElement.toDataURL('image/jpeg', 0.85);
+                freezeFrameImg.classList.add('is-active');
+            } catch (e) {
+                // 极少数情况下 canvas 被判定为 tainted，无法导出，此时安静放弃。
+                console.warn('freeze-frame snapshot failed:', e);
+            }
+        }
+        function hideFreezeFrame() {
+            if (!freezeFrameImg) {
+                return;
+            }
+            freezeFrameImg.classList.remove('is-active');
+            // 释放 data URL 占用的内存。
+            freezeFrameImg.removeAttribute('src');
+        }
+
+        // MSE 降级路径（电脑端用局域网 IP + HTTP 打开时不是安全上下文，浏览器
+        // 停用 WebCodecs）切画质靠整页重载。重载会销毁画面，所以重载前把当前这一帧
+        // 存进 sessionStorage，重载后立刻贴回定格层——这样电脑端切换也不再黑屏/弹加载页。
+        const FREEZE_SNAP_KEY = 'scrcpyFreezeSnap';
+        function captureSwitchSnapshot() {
+            try {
+                let dataUrl = null;
+                if (useWebCodecs && canvasElement && canvasElement.width && canvasElement.height) {
+                    dataUrl = canvasElement.toDataURL('image/jpeg', 0.8);
+                } else if (fallbackVideo && fallbackVideo.videoWidth && fallbackVideo.videoHeight) {
+                    const c = document.createElement('canvas');
+                    c.width = fallbackVideo.videoWidth;
+                    c.height = fallbackVideo.videoHeight;
+                    c.getContext('2d').drawImage(fallbackVideo, 0, 0, c.width, c.height);
+                    dataUrl = c.toDataURL('image/jpeg', 0.8);
+                }
+                if (dataUrl) {
+                    sessionStorage.setItem(FREEZE_SNAP_KEY, dataUrl);
+                }
+            } catch (e) {
+                // toDataURL 可能因跨源污染失败，或存储超限；安静忽略。
+                console.warn('capture switch snapshot failed:', e);
+            }
+        }
+        // 返回 true 表示成功贴回了上一帧快照（调用方据此跳过加载页）。
+        function restoreSwitchSnapshot() {
+            if (!freezeFrameImg) {
+                return false;
+            }
+            let dataUrl = null;
+            try {
+                dataUrl = sessionStorage.getItem(FREEZE_SNAP_KEY);
+                sessionStorage.removeItem(FREEZE_SNAP_KEY);
+            } catch (e) {
+                return false;
+            }
+            if (!dataUrl) {
+                return false;
+            }
+            freezeFrameImg.src = dataUrl;
+            freezeFrameImg.classList.add('is-active');
+            return true;
+        }
 
         function applyPlayerLatencyTuning() {
             if (canvasPlayer) {
@@ -3261,6 +3361,8 @@
                     quietSwitchTimer = null;
                 }
             }
+            // 新一帧已经画到画布上，撤掉定格快照。
+            hideFreezeFrame();
             hideScreenLoader();
             layoutDeviceFrame();
         }
@@ -3489,8 +3591,9 @@
             if (quietSwitch) {
                 // 切换画质/声音触发，已是“保留最后一帧”模式，不弹加载页。
             } else if (useWebCodecs) {
-                // 网络断线重连：保留最后一帧（画面定格而非黑屏），
-                // 若数秒内没恢复再显示加载页。WebCodecs 的 canvas 会保留上一帧。
+                // 网络断线重连：定格最后一帧（画面定格而非黑屏），
+                // 若数秒内没恢复再显示加载页。快照可防画布重配分辨率时闪黑。
+                showFreezeFrame();
                 quietSwitch = true;
                 if (quietSwitchTimer) {
                     clearTimeout(quietSwitchTimer);
@@ -3499,9 +3602,10 @@
                     quietSwitch = false;
                     quietSwitchTimer = null;
                     if (!screenReady) {
+                        hideFreezeFrame();
                         showScreenLoader('正在恢复连接', '重新拉流…');
                     }
-                }, 4000);
+                }, 6000);
                 setConnectionState('reconnecting', '重连中…');
             } else {
                 // MSE 降级：帧不保留，直接显示加载页。
@@ -3951,6 +4055,22 @@
             offlineHotspot.addEventListener('touchend', (e) => { e.preventDefault(); }, { passive: false });
         } else {
             // Gate markup missing, or a quality/audio switch — skip straight in.
+            // 若这是"切画质整页重载"回来的：贴回重载前定格的那一帧，并进入安静切换
+            // 模式，让 connectMedia 不弹加载页——电脑端 MSE 路径切换也不再黑屏。
+            if (skipGateOnce && restoreSwitchSnapshot()) {
+                quietSwitch = true;
+                if (quietSwitchTimer) {
+                    clearTimeout(quietSwitchTimer);
+                }
+                quietSwitchTimer = setTimeout(() => {
+                    quietSwitch = false;
+                    quietSwitchTimer = null;
+                    if (!screenReady) {
+                        hideFreezeFrame();
+                        showScreenLoader('正在切换画质', '重新拉流…');
+                    }
+                }, 12000);
+            }
             startRealSession();
         }
 
