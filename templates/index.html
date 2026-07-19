@@ -967,6 +967,51 @@
                 color: var(--accent);
             }
 
+            /* QQ / 微信 / Soul 有新消息：悬浮球边缘跑马灯（旋转彩虹光环）。
+               只用 transform 旋转一个被遮罩成圆环的小伪元素，GPU 合成、开销极小，
+               不影响视频画面。打开对应 App 后由轮询自动摘掉 has-alert，恢复原样。 */
+            .fab-tools.has-alert,
+            .app.tools-open .fab-tools.has-alert {
+                color: #fff;
+                overflow: visible;
+                background: #0e1014;
+                border-color: transparent;
+            }
+
+            /* 旋转的彩虹圆盘（transform 旋转，GPU 合成，不碰视频画面） */
+            .fab-tools.has-alert::before {
+                content: "";
+                position: absolute;
+                inset: 0;
+                border-radius: 50%;
+                background: conic-gradient(from 0deg,
+                    #ff3b30, #ff9500, #ffd60a, #34c759,
+                    #00c7be, #0a84ff, #af52de, #ff2d55, #ff3b30);
+                animation: fab-marquee-spin 1.1s linear infinite;
+                pointer-events: none;
+                z-index: 0;
+            }
+            /* 中心用实心圆盖住，只露出外圈 = 跑马灯圆环。
+               不用 mask —— 避开 Safari 上 mask + backdrop-filter 的渲染 bug。 */
+            .fab-tools.has-alert::after {
+                content: "";
+                position: absolute;
+                inset: 4px;
+                border-radius: 50%;
+                background: #0e1014;
+                pointer-events: none;
+                z-index: 1;
+            }
+            /* 图标抬到圆盘之上，不被盖住 */
+            .fab-tools.has-alert svg {
+                position: relative;
+                z-index: 2;
+            }
+
+            @keyframes fab-marquee-spin {
+                to { transform: rotate(360deg); }
+            }
+
             .nav-bar {
                 display: none;
             }
@@ -1166,10 +1211,9 @@
 
         /* —— Disguise gate: Chrome offline dino page —— */
         .offline-gate {
-            --offline-bg: #fff;
-            --offline-fg: #5f6368;
-            --offline-title: #202124;
-            --offline-blue: #1a73e8;
+            /* iOS Safari 断网错误页：浅色白底/深色纯黑，文案为次级标签灰、居上三分之一 */
+            --offline-bg: #ffffff;
+            --offline-fg: rgba(60, 60, 67, 0.6);
             position: fixed;
             inset: 0;
             z-index: 99999;
@@ -1178,9 +1222,10 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center;
-            padding: 24px 32px calc(24px + env(safe-area-inset-bottom, 0px));
-            font-family: "Segoe UI", Roboto, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+            justify-content: flex-start;
+            padding: 20vh 30px calc(24px + env(safe-area-inset-bottom, 0px));
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+                "PingFang SC", "Helvetica Neue", system-ui, sans-serif;
             -webkit-user-select: none;
             user-select: none;
             -webkit-tap-highlight-color: transparent;
@@ -1189,10 +1234,8 @@
 
         @media (prefers-color-scheme: dark) {
             .offline-gate {
-                --offline-bg: #202124;
-                --offline-fg: #9aa0a6;
-                --offline-title: #e8eaed;
-                --offline-blue: #8ab4f8;
+                --offline-bg: #000000;
+                --offline-fg: rgba(235, 235, 245, 0.6);
             }
         }
 
@@ -1201,59 +1244,18 @@
         }
 
         .offline-inner {
-            max-width: 340px;
+            max-width: 330px;
             width: 100%;
             text-align: center;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
         }
 
-        .offline-dino {
+        .offline-message {
+            font-size: 18px;
+            font-weight: 400;
+            line-height: 1.4;
             color: var(--offline-fg);
-            margin-bottom: 30px;
-            opacity: 0.95;
-        }
-
-        .offline-dino svg { display: block; }
-
-        .offline-title {
-            font-size: 20px;
-            font-weight: 500;
-            color: var(--offline-title);
-            margin: 0 0 12px;
-            letter-spacing: 0.2px;
-        }
-
-        .offline-hint {
-            font-size: 14px;
-            line-height: 1.6;
-            margin: 0 0 8px;
-        }
-
-        .offline-code {
-            font-size: 12px;
-            color: var(--offline-fg);
-            opacity: 0.7;
-            letter-spacing: 0.4px;
-            margin: 0 0 32px;
-        }
-
-        .offline-retry {
-            appearance: none;
-            border: 1px solid var(--offline-blue);
-            background: transparent;
-            color: var(--offline-blue);
-            font-size: 14px;
-            font-weight: 500;
-            padding: 9px 22px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-family: inherit;
-        }
-
-        .offline-retry:active {
-            background: rgba(26, 115, 232, 0.08);
+            margin: 0;
+            letter-spacing: 0.1px;
         }
 
         /* Invisible unlock zone: bottom-right corner, 3 taps to enter */
@@ -1267,6 +1269,80 @@
             touch-action: manipulation;
             -webkit-user-select: none;
             user-select: none;
+        }
+
+        /* —— 被其他设备顶替：礼貌让出提示 —— */
+        .takeover-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 100002;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(7, 9, 13, 0.86);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+        }
+
+        .takeover-overlay.is-open {
+            display: flex;
+        }
+
+        .takeover-card {
+            width: 100%;
+            max-width: 340px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            gap: 12px;
+            padding: 28px 24px;
+            background: #151821;
+            border: 1px solid var(--line-strong);
+            border-radius: 16px;
+            box-shadow: 0 20px 48px rgba(0, 0, 0, 0.5);
+        }
+
+        .takeover-icon {
+            width: 46px;
+            height: 46px;
+            color: var(--accent);
+        }
+
+        .takeover-icon svg { width: 100%; height: 100%; }
+
+        .takeover-card strong {
+            font-size: 17px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .takeover-card span {
+            font-size: 13px;
+            line-height: 1.6;
+            color: var(--muted);
+        }
+
+        .takeover-btn {
+            margin-top: 6px;
+            appearance: none;
+            border: 1px solid rgba(61, 220, 132, 0.45);
+            background: var(--accent-dim);
+            color: var(--accent);
+            font-size: 14px;
+            font-weight: 600;
+            padding: 10px 22px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-family: inherit;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .takeover-btn:active {
+            background: var(--accent);
+            color: #07140C;
         }
 
         /* —— Diagnostics overlay (long-press the floating ball) —— */
@@ -1606,13 +1682,7 @@
          is not started until the hidden corner is tapped 3 times. -->
     <div class="offline-gate" id="offline-gate">
         <div class="offline-inner">
-            <div class="offline-dino" aria-hidden="true">
-                <svg id="offline-dino-svg" viewBox="0 0 40 44" shape-rendering="crispEdges" width="80" height="88"></svg>
-            </div>
-            <h1 class="offline-title">您尚未连接到互联网</h1>
-            <p class="offline-hint">请检查您的网络连接后重试。</p>
-            <p class="offline-code">ERR_INTERNET_DISCONNECTED</p>
-            <button type="button" class="offline-retry" id="offline-retry">重新加载</button>
+            <p class="offline-message">Safari浏览器打不开该网页，因为已丢失网络连接。</p>
         </div>
         <div class="offline-hotspot" id="offline-hotspot" aria-hidden="true"></div>
     </div>
@@ -1629,6 +1699,21 @@
                 </div>
             </div>
             <textarea id="diag-text" class="diag-text" readonly wrap="off" aria-label="诊断日志"></textarea>
+        </div>
+    </div>
+
+    <!-- 被其他设备顶替时的礼貌让出提示（避免两端互相反复重连）。 -->
+    <div class="takeover-overlay" id="takeover-overlay" role="status" aria-live="polite">
+        <div class="takeover-card">
+            <div class="takeover-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="5" y="2" width="14" height="20" rx="2.5"/>
+                    <line x1="12" y1="18" x2="12" y2="18"/>
+                </svg>
+            </div>
+            <strong>已在其他设备上打开控制</strong>
+            <span>此设备已让出控制权。若要在本设备继续，请点击重新接管。</span>
+            <button type="button" id="takeover-btn" class="takeover-btn">在本设备重新接管</button>
         </div>
     </div>
 
@@ -1832,6 +1917,10 @@
         let connectionGeneration = 0;
         let mediaWidth = 0;
         let mediaHeight = 0;
+        // 被其他设备顶替后进入“礼貌让出”状态：停止一切自动重连，显示提示，
+        // 直到用户点“重新接管”才重连（反过来把对方顶下）。避免两端互相反复踢。
+        const WS_CLOSE_SUPERSEDED = 4009;
+        let supersededYielded = false;
 
         // Declared before requestAudioUnlock (used by toolbar / gesture handlers).
         // Safari / iOS 17+ use WebCodecs AudioDecoder — stay on WebAudio, no JMuxer fallback.
@@ -3571,6 +3660,9 @@
             if (typeof gateUnlocked !== 'undefined' && !gateUnlocked) {
                 return;
             }
+            if (supersededYielded) {
+                return;  // 已让出控制权，不再触发任何重连。
+            }
             if (typeof linkProbeTimer !== 'undefined' && linkProbeTimer) {
                 clearTimeout(linkProbeTimer);
                 linkProbeTimer = null;
@@ -3870,8 +3962,9 @@
                 if (mediaWs !== ws) {
                     return;
                 }
+                const closeCode = event && event.code != null ? event.code : null;
                 if (!intentionalTeardown) {
-                    const code = event && event.code != null ? event.code : '?';
+                    const code = closeCode != null ? closeCode : '?';
                     const clean = event && event.wasClean ? 'clean' : 'abrupt';
                     recordDiag('media-close', 'code=' + code + ' ' + clean);
                 }
@@ -3889,6 +3982,11 @@
                 controlConnected = false;
                 controlConnectStartedAt = 0;
                 reconnecting = false;
+                // 服务器用 4009 通知“已被其他设备接管”：礼貌让出，不再自动重连。
+                if (closeCode === WS_CLOSE_SUPERSEDED) {
+                    enterSupersededMode();
+                    return;
+                }
                 if (!isCurrentConnection(connGen) || intentionalTeardown) {
                     return;
                 }
@@ -3909,6 +4007,9 @@
             if (typeof gateUnlocked !== 'undefined' && !gateUnlocked) {
                 return;
             }
+            if (supersededYielded) {
+                return;  // 已让出控制权，除非用户点“重新接管”，否则不再连接。
+            }
             if (document.hidden || intentionalTeardown || reconnecting) {
                 return;
             }
@@ -3924,6 +4025,65 @@
             }
         }
 
+        // —— 被其他设备顶替：礼貌让出 / 重新接管 ——
+        const takeoverOverlay = document.getElementById('takeover-overlay');
+        function enterSupersededMode() {
+            if (supersededYielded) {
+                return;
+            }
+            supersededYielded = true;
+            // 用 intentionalTeardown 挡住所有隐式重连路径，直到用户主动接管。
+            intentionalTeardown = true;
+            reconnecting = false;
+            stopKeepalive();
+            stopStallWatch();
+            if (typeof linkProbeTimer !== 'undefined' && linkProbeTimer) {
+                clearTimeout(linkProbeTimer);
+                linkProbeTimer = null;
+            }
+            if (forceReconnectTimer) {
+                clearTimeout(forceReconnectTimer);
+                forceReconnectTimer = null;
+            }
+            if (typeof reconnectTimer !== 'undefined' && reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+            teardownSockets();
+            applyNotifyAlert(false);   // 让出期间不显示本机通知红点
+            hideFreezeFrame();
+            setConnectionState('offline', '已在其他设备打开');
+            updateStatus('已在其他设备上打开控制');
+            recordDiag('superseded', '被其他设备接管，已让出');
+            if (takeoverOverlay) {
+                takeoverOverlay.classList.add('is-open');
+            }
+        }
+
+        function exitSupersededMode() {
+            if (!supersededYielded) {
+                return;
+            }
+            supersededYielded = false;
+            intentionalTeardown = false;
+            reconnecting = false;
+            reconnectAttempt = 0;
+            if (takeoverOverlay) {
+                takeoverOverlay.classList.remove('is-open');
+            }
+            setConnectionState('connecting', '重新接管…');
+            showScreenLoader('正在接管控制', '重新连接设备…');
+            recordDiag('takeover', '本设备重新接管');
+            ensureConnections();  // 重新连上 = 把当前控制方顶下
+        }
+
+        (function bindTakeover() {
+            const btn = document.getElementById('takeover-btn');
+            if (btn) {
+                btn.addEventListener('click', (e) => { e.preventDefault(); exitSupersededMode(); });
+            }
+        })();
+
         // Prefer "actually drawn" heartbeat over "packet received".
         if (canvasPlayer) {
             canvasPlayer.onFramePresented = markFramePresented;
@@ -3938,74 +4098,6 @@
         const offlineHotspot = document.getElementById('offline-hotspot');
         let gateUnlocked = false;
 
-        // Render the Chrome T-Rex from a pixel matrix (X = filled), 20 cols wide.
-        (function buildOfflineDino() {
-            const svg = document.getElementById('offline-dino-svg');
-            if (!svg) {
-                return;
-            }
-            const rows = [
-                '............XXXXX...',
-                '............XXXXXX..',
-                '............XXXXXX..',
-                '............XXXXXX..',
-                '............X.XXXX..',
-                '............XXXXXX..',
-                '............XXXXXX..',
-                '............XXX.....',
-                '.X..........XXXX....',
-                '.X.........XXXXX....',
-                '.XX.......XXXXXX....',
-                '.XX......XXXXXXXX...',
-                '.XXX....XXXXXXXXX.XX',
-                '.XXXX..XXXXXXXXXX...',
-                '.XXXXXXXXXXXXXXX....',
-                '..XXXXXXXXXXXXXX....',
-                '...XXXXXXXXXXXX.....',
-                '....XXXXXXXXXX......',
-                '....XXX....XXX......',
-                '....XX.....XX.......',
-                '....XX.....XX.......',
-                '....XXX....XXX......',
-            ];
-            const cell = 2;
-            const ns = 'http://www.w3.org/2000/svg';
-            const frag = document.createDocumentFragment();
-            for (let y = 0; y < rows.length; y++) {
-                const row = rows[y];
-                let x = 0;
-                while (x < row.length) {
-                    if (row[x] === 'X') {
-                        let run = 1;
-                        while (x + run < row.length && row[x + run] === 'X') {
-                            run++;
-                        }
-                        const r = document.createElementNS(ns, 'rect');
-                        r.setAttribute('x', x * cell);
-                        r.setAttribute('y', y * cell);
-                        r.setAttribute('width', run * cell);
-                        r.setAttribute('height', cell);
-                        r.setAttribute('fill', 'currentColor');
-                        frag.appendChild(r);
-                        x += run;
-                    } else {
-                        x++;
-                    }
-                }
-            }
-            svg.appendChild(frag);
-        })();
-
-        // Fake "重新加载" button: behaves like the real one (reloads the page),
-        // which just re-shows the offline gate. It never unlocks.
-        const offlineRetry = document.getElementById('offline-retry');
-        if (offlineRetry) {
-            offlineRetry.addEventListener('click', (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                location.reload();
-            });
-        }
 
         function startRealSession() {
             if (gateUnlocked) {
@@ -4016,6 +4108,71 @@
                 offlineGate.classList.add('is-gone');
             }
             connectMedia();
+            startNotificationWatch();
+        }
+
+        // 隐私伪装：一旦切走浏览器标签 / 切到后台 / 熄屏，立刻盖回“断网小恐龙”页，
+        // 回来时需重新点右下角 3 下才进真实界面。连接保留在后台，重新解锁后画面立即恢复。
+        function relockGate() {
+            if (!gateUnlocked || !offlineGate) {
+                return;
+            }
+            gateUnlocked = false;
+            offlineGate.classList.remove('is-gone');
+        }
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                relockGate();
+            }
+        });
+
+        // —— 消息通知红点：QQ / 微信 / Soul 有新消息时悬浮球变红 ——
+        const NOTIFY_POLL_MS = 5000;
+        let notifyTimer = null;
+        // “锁存”未读集合：一旦某 App 来消息就加入，一直保持点亮，直到该 App 被打开
+        // （切到前台）才移除。这样即使系统把通知短时间内自动清掉、或刚好卡在两次
+        // 轮询之间，也不会漏掉那一下。
+        const notifyPending = new Set();
+        function applyNotifyAlert(on) {
+            const fab = document.getElementById('fab-tools');
+            if (fab) {
+                fab.classList.toggle('has-alert', !!on);
+            }
+        }
+        function pollNotifications() {
+            if (document.hidden || !gateUnlocked || supersededYielded) {
+                return;  // 让出控制权期间不查通知，避免无谓的 adb 占用。
+            }
+            fetch('/api/notifications?ts=' + Date.now(), { cache: 'no-store' })
+                .then((r) => (r.ok ? r.json() : null))
+                .then((d) => {
+                    if (!d) {
+                        return;
+                    }
+                    // 新来消息的 App 加入锁存集合。
+                    if (Array.isArray(d.packages)) {
+                        d.packages.forEach((p) => notifyPending.add(p));
+                    }
+                    // 打开某 App（它切到前台）就清掉它的红点。
+                    if (d.foreground) {
+                        notifyPending.delete(d.foreground);
+                    }
+                    applyNotifyAlert(notifyPending.size > 0);
+                })
+                .catch(() => {});
+        }
+        function startNotificationWatch() {
+            if (notifyTimer) {
+                return;
+            }
+            pollNotifications();
+            notifyTimer = setInterval(pollNotifications, NOTIFY_POLL_MS);
+            // 从后台切回前台时立刻刷新一次，红点状态更跟手。
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden) {
+                    pollNotifications();
+                }
+            });
         }
 
         // Switching quality/audio reloads the page; that reload should NOT
@@ -4118,6 +4275,9 @@
         function recoverFromBackground(source) {
             if (!gateUnlocked) {
                 return;
+            }
+            if (supersededYielded) {
+                return;  // 已让出控制权，切前台不自动重连。
             }
             if (document.hidden) {
                 return;

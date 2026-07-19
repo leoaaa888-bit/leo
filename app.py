@@ -25,6 +25,7 @@ from tls_util import resolve_ssl_paths
 from scrcpy import (
     Scrcpy,
     trigger_device_screenshot,
+    get_notification_state,
     check_adb,
     list_adb_devices,
     preclean_connection,
@@ -55,6 +56,9 @@ QUALITY_PRESETS = {
 
 MSG_VIDEO = 1
 MSG_AUDIO = 2
+
+# 被新设备顶替时用这个专门的关闭码，告诉旧网页“是被其他设备接管，别自动重连”。
+WS_CLOSE_SUPERSEDED = 4009
 
 app = FastAPI(title="web-scrcpy")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -276,7 +280,7 @@ class ClientSession:
             if not self.closed:
                 asyncio.create_task(self.shutdown())
 
-    async def shutdown(self):
+    async def shutdown(self, superseded: bool = False):
         global active_session
         if self.closed:
             return
@@ -309,11 +313,12 @@ class ClientSession:
         control = self.control_ws
         self.media_ws = None
         self.control_ws = None
+        close_code = WS_CLOSE_SUPERSEDED if superseded else 1000
         for ws in (media, control):
             if ws is None:
                 continue
             try:
-                await ws.close()
+                await ws.close(code=close_code)
             except Exception:
                 pass
 
@@ -343,7 +348,8 @@ async def await_sessions_shutdown(sessions: list[ClientSession], timeout: float 
     for session in sessions:
         if session is None:
             continue
-        task = asyncio.create_task(session.shutdown())
+        # 这条路径专门是“新连接顶替旧会话”，用 superseded 关闭码通知旧网页礼貌让出。
+        task = asyncio.create_task(session.shutdown(superseded=True))
         tasks.append(task)
         _pending_shutdowns.append(task)
     _prune_shutdown_tasks()
@@ -414,7 +420,15 @@ def resolve_stream_settings(
 
 @app.get("/")
 def index():
-    return FileResponse(TEMPLATES_DIR / "index.html")
+    # 明确禁用缓存：否则 iOS Safari 会长时间保留旧 index.html，页面改动传不到手机。
+    return FileResponse(
+        TEMPLATES_DIR / "index.html",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/api/devices")
@@ -435,6 +449,18 @@ def api_screenshot(device_serial: Optional[str] = Query(None)):
     if ok:
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "screenshot failed"}, status_code=500)
+
+
+@app.get("/api/notifications")
+async def api_notifications(device_serial: Optional[str] = Query(None)):
+    """QQ / 微信 / Soul 有新消息时返回 alert=true，供网页悬浮球变红。"""
+    serial = device_serial
+    if serial is None:
+        with session_lock:
+            if active_session is not None:
+                serial = active_session.device_serial
+    state = await asyncio.to_thread(get_notification_state, serial)
+    return JSONResponse(state)
 
 
 @app.get("/favicon.ico")

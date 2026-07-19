@@ -132,6 +132,111 @@ def trigger_device_screenshot(device_serial=None):
     return False
 
 
+# —— 消息通知检测（QQ / 微信 / Soul）——
+# 网页悬浮球据此变红：三者之一有“可清除的消息通知”且该 App 不在前台时点亮，
+# 打开对应 App（切到前台）后熄灭。
+NOTIFY_TARGET_PACKAGES = ("com.tencent.mm", "com.tencent.mobileqq", "cn.soulapp.android")
+
+# 视为“常驻/非消息”的通知标志位——微信/QQ 的“运行中”前台服务通知带这些位，
+# 一律跳过，避免悬浮球一直红着。
+_NOTIFY_FLAG_ONGOING = 0x00000002
+_NOTIFY_FLAG_NO_CLEAR = 0x00000020
+_NOTIFY_FLAG_FOREGROUND_SERVICE = 0x00000040
+_NOTIFY_PERSISTENT_FLAGS = (
+    _NOTIFY_FLAG_ONGOING | _NOTIFY_FLAG_NO_CLEAR | _NOTIFY_FLAG_FOREGROUND_SERVICE
+)
+
+# 一次 adb 往返同时取“前台 App”和“通知列表”，用标记分段。
+_NOTIFY_SHELL = (
+    "echo @@FG@@; dumpsys window | grep mCurrentFocus; "
+    "echo @@NT@@; dumpsys notification --noredact | grep 'NotificationRecord('"
+)
+
+# 轻量缓存：多端/多次轮询时避免频繁执行 dumpsys（约几百毫秒）。
+_notify_cache = {"at": 0.0, "serial": None, "state": None}
+_notify_cache_lock = Lock()
+_NOTIFY_CACHE_TTL_S = 2.5
+
+
+def _parse_foreground_package(line):
+    """从 mCurrentFocus 行里取前台 App 的包名。"""
+    m = re.search(r"\bu\d+\s+([a-zA-Z0-9_.]+)/", line)
+    if m:
+        return m.group(1)
+    m = re.search(r"([a-zA-Z0-9_.]+)/[a-zA-Z0-9_.$]+\}", line)
+    return m.group(1) if m else None
+
+
+def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
+    """
+    返回 {ok, alert, packages, foreground}：
+      - packages：当前有“真实消息通知”且不在前台的目标 App 列表
+      - alert：packages 是否非空（悬浮球是否应变红）
+      - foreground：当前前台 App 包名
+    """
+    serial = resolve_device_serial(device_serial)
+    empty = {"ok": True, "alert": False, "packages": [], "foreground": None}
+    if not serial:
+        return {**empty, "ok": False}
+
+    now = time.time()
+    with _notify_cache_lock:
+        c = _notify_cache
+        if (c["state"] is not None and c["serial"] == serial
+                and now - c["at"] < _NOTIFY_CACHE_TTL_S):
+            return c["state"]
+
+    try:
+        result = _run(
+            adb_cmd("shell", _NOTIFY_SHELL, device_serial=serial),
+            capture_output=True, text=True, timeout=6,
+        )
+    except Exception as e:
+        return {**empty, "ok": False, "error": str(e)}
+
+    target_set = set(packages)
+    section = None
+    foreground = None
+    alerting = []
+    for raw in (result.stdout or "").splitlines():
+        line = raw.strip()
+        if line == "@@FG@@":
+            section = "fg"
+            continue
+        if line == "@@NT@@":
+            section = "nt"
+            continue
+        if section == "fg" and "mCurrentFocus" in line and foreground is None:
+            foreground = _parse_foreground_package(line)
+        elif section == "nt" and line.startswith("NotificationRecord("):
+            m = re.search(r"pkg=(\S+)", line)
+            if not m or m.group(1) not in target_set:
+                continue
+            pkg = m.group(1)
+            imp_m = re.search(r"importance=(-?\d+)", line)
+            importance = int(imp_m.group(1)) if imp_m else 3
+            fl_m = re.search(r"flags=0x([0-9a-fA-F]+)", line)
+            flags = int(fl_m.group(1), 16) if fl_m else 0
+            if importance <= 1:
+                continue  # IMPORTANCE_MIN/NONE：不是真正的消息提醒
+            if flags & _NOTIFY_PERSISTENT_FLAGS:
+                continue  # 常驻/前台服务通知（如“微信运行中”），跳过
+            if pkg not in alerting:
+                alerting.append(pkg)
+
+    # 打开哪个 App（切到前台）就熄灭哪个的红点。
+    active = [p for p in alerting if p != foreground]
+    state = {
+        "ok": True,
+        "alert": len(active) > 0,
+        "packages": active,
+        "foreground": foreground,
+    }
+    with _notify_cache_lock:
+        _notify_cache.update(at=time.time(), serial=serial, state=state)
+    return state
+
+
 def preclean_connection(device_serial=None, local_port=None):
     """
     Scrub stale adb forward and device-side scrcpy server before a fresh connect.
