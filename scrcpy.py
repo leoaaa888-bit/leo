@@ -421,7 +421,10 @@ class Scrcpy:
                 f"tunnel_forward=true {audio_param} "
                 f"clipboard_autosync=false "
                 f"power_off_on_close=false "
-                f"stay_awake=true "
+                # 不强制保持唤醒：连接期间也按手机自己的息屏时间自动熄屏/锁屏。
+                # 注意：熄屏锁屏后 Android 11 会切断音频抓取（要求解锁+亮屏），
+                # 届时声音会停，需在投屏里解锁手机才恢复。
+                f"stay_awake=false "
                 f"log_level=INFO "
                 f"video_bit_rate={self.video_bit_rate} "
                 f"max_size={self.max_size} "
