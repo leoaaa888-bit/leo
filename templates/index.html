@@ -3454,6 +3454,13 @@
             hideFreezeFrame();
             hideScreenLoader();
             layoutDeviceFrame();
+            // 手机唤醒到锁屏后只亮约 9 秒就回休眠，而视频要几秒才出画面。
+            // 所以画面真正出来时再唤醒一次，保证你看到 PIN 盘时窗口是完整的。
+            // 服务端对“已唤醒且未锁屏”的手机会跳过，不会打断正在进行的操作。
+            if (!wakeOnFirstFrameDone) {
+                wakeOnFirstFrameDone = true;
+                fetch('/api/wake?ts=' + Date.now(), { cache: 'no-store' }).catch(() => {});
+            }
         }
 
         function markMediaPacket() {
@@ -4097,6 +4104,12 @@
         const offlineGate = document.getElementById('offline-gate');
         const offlineHotspot = document.getElementById('offline-hotspot');
         let gateUnlocked = false;
+        // 每次进入只在“第一帧画面出来时”补一次唤醒（见 markFramePresented）。
+        let wakeOnFirstFrameDone = false;
+        // 刚点三下进来的时间。唤醒手机要约 1 秒，而通知轮询有服务端缓存，
+        // 期间会读到“手机还睡着”的旧状态而把伪装页又盖回来。用宽限期避开这个竞态。
+        let gateUnlockedAt = 0;
+        const GATE_RELOCK_GRACE_MS = 15000;
 
 
         function startRealSession() {
@@ -4104,9 +4117,14 @@
                 return;
             }
             gateUnlocked = true;
+            gateUnlockedAt = Date.now();
             if (offlineGate) {
                 offlineGate.classList.add('is-gone');
             }
+            // 手机会按自己的设置自动息屏/锁屏，而 scrcpy 的触摸唤不醒休眠中的设备。
+            // 所以进入时让服务端用 adb 唤醒；若在锁屏就直接调出 PIN 输入盘。
+            // 手机本来就醒着且没锁时服务端会跳过，不打扰正在进行的操作。
+            fetch('/api/wake?ts=' + Date.now(), { cache: 'no-store' }).catch(() => {});
             connectMedia();
             startNotificationWatch();
         }
@@ -4118,6 +4136,8 @@
                 return;
             }
             gateUnlocked = false;
+            // 下次再进来时要重新补一次唤醒。
+            wakeOnFirstFrameDone = false;
             offlineGate.classList.remove('is-gone');
         }
         document.addEventListener('visibilitychange', () => {
@@ -4158,6 +4178,16 @@
                         notifyPending.delete(d.foreground);
                     }
                     applyNotifyAlert(notifyPending.size > 0);
+
+                    // 手机睡着了（息屏）→ 盖回伪装页，这样随时可以点三下唤醒进 PIN。
+                    // 只看“是否睡着”，不看“是否锁定”：正在输 PIN 时手机是醒着的，
+                    // 若按锁定判断会把伪装页弹出来挡住输入。
+                    // 宽限期：刚点三下进来时手机还没唤醒完（且状态有缓存），
+                    // 这段时间不盖回去，否则会刚进来就被弹回伪装页。
+                    if (d.awake === false
+                        && Date.now() - gateUnlockedAt > GATE_RELOCK_GRACE_MS) {
+                        relockGate();
+                    }
                 })
                 .catch(() => {});
         }

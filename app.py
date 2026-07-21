@@ -26,6 +26,7 @@ from scrcpy import (
     Scrcpy,
     trigger_device_screenshot,
     get_notification_state,
+    wake_for_unlock,
     check_adb,
     list_adb_devices,
     preclean_connection,
@@ -449,6 +450,18 @@ def api_screenshot(device_serial: Optional[str] = Query(None)):
     if ok:
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "screenshot failed"}, status_code=500)
+
+
+@app.get("/api/wake")
+async def api_wake(device_serial: Optional[str] = Query(None)):
+    """进入投屏时唤醒手机；若锁屏则直接调出 PIN 输入界面。"""
+    serial = device_serial
+    if serial is None:
+        with session_lock:
+            if active_session is not None:
+                serial = active_session.device_serial
+    state = await asyncio.to_thread(wake_for_unlock, serial)
+    return JSONResponse(state)
 
 
 @app.get("/api/notifications")

@@ -146,9 +146,12 @@ _NOTIFY_PERSISTENT_FLAGS = (
     _NOTIFY_FLAG_ONGOING | _NOTIFY_FLAG_NO_CLEAR | _NOTIFY_FLAG_FOREGROUND_SERVICE
 )
 
-# 一次 adb 往返同时取“前台 App”和“通知列表”，用标记分段。
+# 一次 adb 往返同时取“前台 App”“电源状态”“通知列表”，用标记分段。
+# 电源状态给网页判断：手机睡着了就把伪装页盖回来，让用户可以点三下唤醒进 PIN。
 _NOTIFY_SHELL = (
     "echo @@FG@@; dumpsys window | grep mCurrentFocus; "
+    "echo @@PW@@; dumpsys power | grep -o 'mWakefulness=[A-Za-z]*'; "
+    "dumpsys trust | grep -o 'deviceLocked=[01]' | head -1; "
     "echo @@NT@@; dumpsys notification --noredact | grep 'NotificationRecord('"
 )
 
@@ -198,16 +201,26 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
     section = None
     foreground = None
     alerting = []
+    awake = None
+    locked = None
     for raw in (result.stdout or "").splitlines():
         line = raw.strip()
         if line == "@@FG@@":
             section = "fg"
+            continue
+        if line == "@@PW@@":
+            section = "pw"
             continue
         if line == "@@NT@@":
             section = "nt"
             continue
         if section == "fg" and "mCurrentFocus" in line and foreground is None:
             foreground = _parse_foreground_package(line)
+        elif section == "pw":
+            if line.startswith("mWakefulness="):
+                awake = line == "mWakefulness=Awake"
+            elif line.startswith("deviceLocked="):
+                locked = line.endswith("=1")
         elif section == "nt" and line.startswith("NotificationRecord("):
             m = re.search(r"pkg=(\S+)", line)
             if not m or m.group(1) not in target_set:
@@ -231,10 +244,97 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
         "alert": len(active) > 0,
         "packages": active,
         "foreground": foreground,
+        # 供网页判断是否该盖回伪装页（手机睡着时盖回，方便点三下唤醒进 PIN）。
+        "awake": awake,
+        "locked": locked,
     }
     with _notify_cache_lock:
         _notify_cache.update(at=time.time(), serial=serial, state=state)
     return state
+
+
+# —— 进入投屏时唤醒手机并调出解锁界面 ——
+# 手机现在会按自己的设置自动息屏/锁屏，而 scrcpy 注入的触摸唤不醒休眠中的设备，
+# 所以在网页解锁伪装页进入时，用 adb 主动唤醒；若处于锁屏则上滑调出 PIN 输入盘。
+_screen_size_cache = {}
+
+
+def _get_screen_size(serial):
+    """取设备分辨率（缓存），用于按比例计算上滑坐标。"""
+    cached = _screen_size_cache.get(serial)
+    if cached:
+        return cached
+    try:
+        r = _run(
+            adb_cmd("shell", "wm size", device_serial=serial),
+            capture_output=True, text=True, timeout=5,
+        )
+        m = re.search(r"(\d+)x(\d+)", r.stdout or "")
+        if m:
+            size = (int(m.group(1)), int(m.group(2)))
+            _screen_size_cache[serial] = size
+            return size
+    except Exception:
+        pass
+    return None
+
+
+def wake_for_unlock(device_serial=None):
+    """
+    唤醒手机；若在锁屏则上滑调出密码输入界面。
+    手机本来就醒着且未锁定时不做任何操作（避免打断正在进行的使用）。
+    """
+    serial = resolve_device_serial(device_serial)
+    if not serial:
+        return {"ok": False, "action": "no-device"}
+
+    try:
+        r = _run(
+            adb_cmd(
+                "shell",
+                "dumpsys power | grep -o 'mWakefulness=[A-Za-z]*'; "
+                "dumpsys trust | grep -o 'deviceLocked=[01]' | head -1",
+                device_serial=serial,
+            ),
+            capture_output=True, text=True, timeout=6,
+        )
+    except Exception as e:
+        return {"ok": False, "action": "state-failed", "error": str(e)}
+
+    out = r.stdout or ""
+    awake = "mWakefulness=Awake" in out
+    locked = "deviceLocked=1" in out
+
+    if awake and not locked:
+        return {"ok": True, "action": "none"}  # 正在用，别打扰
+
+    try:
+        _run(
+            adb_cmd("shell", "input keyevent KEYCODE_WAKEUP", device_serial=serial),
+            capture_output=True, text=True, timeout=5,
+        )
+        if not locked:
+            print("wake: screen on (device was not locked)")
+            return {"ok": True, "action": "woke"}
+
+        time.sleep(0.5)  # 等锁屏界面起来再上滑
+        size = _get_screen_size(serial)
+        if size:
+            w, h = size
+            x = w // 2
+            _run(
+                adb_cmd(
+                    "shell",
+                    f"input swipe {x} {int(h * 0.78)} {x} {int(h * 0.28)} 200",
+                    device_serial=serial,
+                ),
+                capture_output=True, text=True, timeout=6,
+            )
+        print("wake: screen on + unlock prompt shown")
+        return {"ok": True, "action": "woke+unlock-prompt"}
+    except Exception as e:
+        print(f"wake failed: {e}")
+        return {"ok": False, "action": "wake-failed", "error": str(e)}
 
 
 def preclean_connection(device_serial=None, local_port=None):
