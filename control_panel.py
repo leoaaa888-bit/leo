@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -84,6 +85,64 @@ def primary_lan_ip() -> str:
         return ip
     except OSError:
         return "127.0.0.1"
+
+
+# 虚拟网卡的地址无法用来访问，列出来只是噪音，直接跳过。
+_SKIP_ADAPTERS = ("vmware", "virtualbox", "vethernet", "hyper-v", "loopback", "bluetooth")
+
+
+def _label_for(adapter: str, ip: str) -> str:
+    """给网卡起个好认的名字：Tailscale / ZeroTier / 局域网。"""
+    name = adapter.lower()
+    if "tailscale" in name:
+        return "Tailscale"
+    if "zerotier" in name:
+        return "ZeroTier"
+    # Tailscale 用 100.64.0.0/10（CGNAT 段），网卡名认不出来时按网段兜底
+    try:
+        a, b = ip.split(".")[:2]
+        if a == "100" and 64 <= int(b) <= 127:
+            return "Tailscale"
+    except (ValueError, IndexError):
+        pass
+    return "局域网"
+
+
+def list_access_ips() -> list[tuple[str, str]]:
+    """
+    列出本机所有可用于访问的 IPv4（含 Tailscale / ZeroTier / 局域网）。
+    返回 [(标签, IP), ...]，按 Tailscale → ZeroTier → 局域网 排序，
+    这样“用哪个网络访问就能在面板里看到哪个地址”。
+    """
+    found: list[tuple[str, str]] = []
+    try:
+        r = run_hidden(["ipconfig"], timeout=6)
+        out = r.stdout or ""
+    except Exception:
+        out = ""
+
+    adapter = ""
+    for raw in out.splitlines():
+        if raw.strip() and not raw[0].isspace():
+            adapter = raw.strip().rstrip(":").strip()   # 适配器标题行
+            continue
+        if adapter and "IPv4" in raw:
+            if any(s in adapter.lower() for s in _SKIP_ADAPTERS):
+                continue
+            m = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", raw)
+            if m:
+                ip = m.group(1)
+                if not ip.startswith(("127.", "169.254.")):
+                    found.append((_label_for(adapter, ip), ip))
+
+    if not found:                      # ipconfig 解析失败时的兜底
+        found = [("局域网", primary_lan_ip())]
+
+    order = {"Tailscale": 0, "ZeroTier": 1, "局域网": 2}
+    # 同一网卡可能有多个地址，去重后排序
+    uniq = list(dict.fromkeys(found))
+    uniq.sort(key=lambda t: order.get(t[0], 9))
+    return uniq
 
 
 def port_in_use(port: int) -> bool:
@@ -219,7 +278,8 @@ class ControlPanel:
     def __init__(self, root: tk.Tk, autostart: bool = False):
         self.root = root
         self.portmap = PortMap()
-        self.lan_ip = primary_lan_ip()
+        # 所有可用访问地址（Tailscale / ZeroTier / 局域网），随轮询刷新。
+        self.access_ips = list_access_ips()
         self.lock = threading.Lock()
         # serial -> {model, web_port, local_port, running}
         self.devices = {}
@@ -397,6 +457,8 @@ class ControlPanel:
         threading.Thread(target=self._poll_once, daemon=True).start()
 
     def _poll_once(self):
+        # 网络可能中途接上/断开（比如切 Tailscale），每轮重新识别可用地址。
+        self.access_ips = list_access_ips()
         serials = list_adb_serials()
         snapshot = {}
         for s in serials:
@@ -419,9 +481,12 @@ class ControlPanel:
             devices = dict(self.devices)
         existing = set(self.tree.get_children())
         seen = set()
+        ips = list(self.access_ips)
+        # 首选地址：Tailscale > ZeroTier > 局域网（list_access_ips 已按此排序）
+        primary_ip = ips[0][1] if ips else "127.0.0.1"
         for serial, d in sorted(devices.items(), key=lambda kv: kv[1]["web_port"]):
             seen.add(serial)
-            url = "http://{}:{}".format(self.lan_ip, d["web_port"])
+            url = "http://{}:{}".format(primary_ip, d["web_port"])
             status = "运行中" if d["running"] else "未启动"
             tag = "running" if d["running"] else "stopped"
             values = (d["model"], serial, d["web_port"], status, url)
@@ -434,7 +499,11 @@ class ControlPanel:
 
         n = len(devices)
         running = sum(1 for d in devices.values() if d["running"])
-        self.status_var.set("检测到 {} 台设备，运行中 {} 台   本机IP {}".format(n, running, self.lan_ip))
+        # 把所有可用访问地址都列出来，用哪个网络就照着哪个填。
+        addr_text = " · ".join("{} {}".format(lab, ip) for lab, ip in ips) or "无可用地址"
+        self.status_var.set(
+            "检测到 {} 台设备，运行中 {} 台   |   {}".format(n, running, addr_text)
+        )
         self.root.after(1500, self._refresh_ui)
 
     def _on_select(self, _event=None):
