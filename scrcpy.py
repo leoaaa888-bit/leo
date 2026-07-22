@@ -146,12 +146,13 @@ _NOTIFY_PERSISTENT_FLAGS = (
     _NOTIFY_FLAG_ONGOING | _NOTIFY_FLAG_NO_CLEAR | _NOTIFY_FLAG_FOREGROUND_SERVICE
 )
 
-# 一次 adb 往返同时取“前台 App”“电源状态”“通知列表”，用标记分段。
-# 电源状态给网页判断：手机睡着了就把伪装页盖回来，让用户可以点三下唤醒进 PIN。
+# 一次 adb 往返同时取“前台 App”“屏幕是否亮着”“通知列表”，用标记分段。
+# 屏幕状态给网页判断：手机睡着了就把伪装页盖回来，让用户可以点三下唤醒进 PIN。
+# 这里用 deviceidle get screen（约 150ms）而不是 dumpsys power（约 330ms）+
+# dumpsys trust（约 160ms）：每 5 秒一次，手机内存紧张时这点开销也值得省。
 _NOTIFY_SHELL = (
     "echo @@FG@@; dumpsys window | grep mCurrentFocus; "
-    "echo @@PW@@; dumpsys power | grep -o 'mWakefulness=[A-Za-z]*'; "
-    "dumpsys trust | grep -o 'deviceLocked=[01]' | head -1; "
+    "echo @@PW@@; dumpsys deviceidle get screen; "
     "echo @@NT@@; dumpsys notification --noredact | grep 'NotificationRecord('"
 )
 
@@ -202,7 +203,6 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
     foreground = None
     alerting = []
     awake = None
-    locked = None
     for raw in (result.stdout or "").splitlines():
         line = raw.strip()
         if line == "@@FG@@":
@@ -217,10 +217,8 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
         if section == "fg" and "mCurrentFocus" in line and foreground is None:
             foreground = _parse_foreground_package(line)
         elif section == "pw":
-            if line.startswith("mWakefulness="):
-                awake = line == "mWakefulness=Awake"
-            elif line.startswith("deviceLocked="):
-                locked = line.endswith("=1")
+            if line in ("true", "false"):
+                awake = line == "true"   # deviceidle get screen：屏幕是否亮着
         elif section == "nt" and line.startswith("NotificationRecord("):
             m = re.search(r"pkg=(\S+)", line)
             if not m or m.group(1) not in target_set:
@@ -246,7 +244,6 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
         "foreground": foreground,
         # 供网页判断是否该盖回伪装页（手机睡着时盖回，方便点三下唤醒进 PIN）。
         "awake": awake,
-        "locked": locked,
     }
     with _notify_cache_lock:
         _notify_cache.update(at=time.time(), serial=serial, state=state)
