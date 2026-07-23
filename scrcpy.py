@@ -334,6 +334,33 @@ def wake_for_unlock(device_serial=None):
         return {"ok": False, "action": "wake-failed", "error": str(e)}
 
 
+def set_device_ime_visible(visible, device_serial=None):
+    """
+    切换手机自己的屏幕输入法是否弹出。
+
+    scrcpy 注入输入时安卓把它当外接硬件键盘，默认就不弹屏幕输入法了
+    （show_ime_with_hard_keyboard=0）。置 1 后点手机上的文本框会正常弹出
+    手机输入法（可用拼音候选词）；置 0 则隐藏，避免和本机键盘两套键盘打架。
+    """
+    serial = resolve_device_serial(device_serial)
+    if not serial:
+        return {"ok": False, "visible": None}
+    value = "1" if visible else "0"
+    try:
+        _run(
+            adb_cmd(
+                "shell", f"settings put secure show_ime_with_hard_keyboard {value}",
+                device_serial=serial,
+            ),
+            capture_output=True, text=True, timeout=6,
+        )
+        print(f"device IME visible: {value}")
+        return {"ok": True, "visible": bool(visible)}
+    except Exception as e:
+        print(f"set device IME failed: {e}")
+        return {"ok": False, "visible": None, "error": str(e)}
+
+
 def preclean_connection(device_serial=None, local_port=None):
     """
     Scrub stale adb forward and device-side scrcpy server before a fresh connect.

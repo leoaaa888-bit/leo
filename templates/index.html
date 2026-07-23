@@ -1795,6 +1795,16 @@
             localStorage.setItem(KEYBOARD_STORAGE_KEY, enabled ? 'true' : 'false');
         }
 
+        // 输入方式：'local' = 用本机(iPhone)键盘打字注入；'device' = 用手机自己的输入法
+        // （点手机上的文本框会弹出，支持拼音候选词）。长按键盘按钮切换。
+        const INPUT_MODE_KEY = 'inputMode';
+        function loadInputMode() {
+            return localStorage.getItem(INPUT_MODE_KEY) === 'device' ? 'device' : 'local';
+        }
+        function saveInputMode(mode) {
+            localStorage.setItem(INPUT_MODE_KEY, mode);
+        }
+
         function loadQualityPreset() {
             const saved = localStorage.getItem(QUALITY_STORAGE_KEY);
             if (saved && QUALITY_PRESETS[saved]) {
@@ -1810,6 +1820,7 @@
         let audioEnabled = loadAudioEnabled();
         const isDesktopView = ScrcpyInput.isDesktopView();
         let keyboardEnabled = isDesktopView && loadKeyboardEnabled();
+        let inputMode = loadInputMode();
         let qualityPreset = loadQualityPreset();
         let qualityConfig = QUALITY_PRESETS[qualityPreset];
         const canvasElement = document.getElementById('player');
@@ -2165,15 +2176,19 @@
                 return;
             }
             btn.style.display = '';
-            if (keyboardEnabled) {
-                btn.title = '键盘输入（已开启，点击关闭）';
-                btn.setAttribute('data-tip', '键盘开');
-                btn.classList.add('is-active');
+            // 两个开关互相独立：短按管本机键盘，长按管手机输入法，可同时开。
+            const deviceIme = inputMode === 'device';
+            btn.title = '本机键盘' + (keyboardEnabled ? '开' : '关')
+                + ' / 手机输入法' + (deviceIme ? '开' : '关')
+                + '（点击开关本机键盘，长按开关手机输入法）';
+            if (keyboardEnabled && deviceIme) {
+                btn.setAttribute('data-tip', '双键盘');
+            } else if (deviceIme) {
+                btn.setAttribute('data-tip', '手机输入法');
             } else {
-                btn.title = '键盘输入（已关闭，点击开启）';
-                btn.setAttribute('data-tip', '键盘关');
-                btn.classList.remove('is-active');
+                btn.setAttribute('data-tip', keyboardEnabled ? '键盘开' : '键盘关');
             }
+            btn.classList.toggle('is-active', keyboardEnabled || deviceIme);
         }
 
         function getKeyboardMappingHint() {
@@ -2206,6 +2221,30 @@
             displayElement.classList.toggle('keyboard-focused', active);
             if (deviceFrame) {
                 deviceFrame.classList.toggle('kb-focus', active);
+            }
+        }
+
+        // 把手机自己的输入法开/关同步到设备（长按键盘按钮切换输入方式时调用）。
+        function pushDeviceImeMode(useDeviceIme) {
+            fetch('/api/ime?on=' + (useDeviceIme ? 1 : 0) + '&ts=' + Date.now(),
+                  { cache: 'no-store' })
+                .catch(() => {});
+        }
+
+        // 长按键盘按钮：在「本机键盘」和「手机输入法」之间切换。
+        // 长按键盘按钮：单独开关“手机自己的输入法”。它和本机键盘互相独立——
+        // 两个都开时，点手机上的输入框会弹出手机输入法，而本机键盘一直在，
+        // 于是两套键盘同时可用（看拼音候选用手机的，快速打字用本机的）。
+        function toggleInputMode() {
+            inputMode = inputMode === 'device' ? 'local' : 'device';
+            saveInputMode(inputMode);
+            updateKeyboardToggleIcon();
+            if (inputMode === 'device') {
+                pushDeviceImeMode(true);
+                showKeyboardHint('手机输入法已开：点手机上的输入框即可弹出');
+            } else {
+                pushDeviceImeMode(false);
+                showKeyboardHint('手机输入法已关：只用本机键盘');
             }
         }
 
@@ -2460,8 +2499,39 @@
                 event.currentTarget.blur();
             });
 
-            document.getElementById('keyboard-toggle-icon').addEventListener('click', (event) => {
+            // 键盘按钮：短按 = 开关本机键盘；长按 = 切换「本机键盘 / 手机输入法」。
+            const kbBtn = document.getElementById('keyboard-toggle-icon');
+            let kbPressTimer = null;
+            let kbLongFired = false;
+            const kbCancelPress = () => {
+                if (kbPressTimer) {
+                    clearTimeout(kbPressTimer);
+                    kbPressTimer = null;
+                }
+            };
+            kbBtn.addEventListener('pointerdown', () => {
+                kbLongFired = false;
+                kbCancelPress();
+                kbPressTimer = setTimeout(() => {
+                    kbPressTimer = null;
+                    kbLongFired = true;
+                    toggleInputMode();
+                    closeToolsPanel();
+                }, 650);
+            });
+            kbBtn.addEventListener('pointerup', kbCancelPress);
+            kbBtn.addEventListener('pointercancel', () => {
+                kbCancelPress();
+                kbLongFired = false;
+            });
+            kbBtn.addEventListener('pointerleave', kbCancelPress);
+            kbBtn.addEventListener('click', (event) => {
                 event.preventDefault();
+                if (kbLongFired) {          // 长按已处理，忽略随后的 click
+                    kbLongFired = false;
+                    event.currentTarget.blur();
+                    return;
+                }
                 requestAudioUnlock();
                 toggleKeyboardInput();
                 closeToolsPanel();
@@ -4125,6 +4195,8 @@
             // 所以进入时让服务端用 adb 唤醒；若在锁屏就直接调出 PIN 输入盘。
             // 手机本来就醒着且没锁时服务端会跳过，不打扰正在进行的操作。
             fetch('/api/wake?ts=' + Date.now(), { cache: 'no-store' }).catch(() => {});
+            // 让手机端的输入法开关和本页记住的输入方式保持一致（换设备/重装后也对得上）。
+            pushDeviceImeMode(inputMode === 'device');
             connectMedia();
             startNotificationWatch();
         }

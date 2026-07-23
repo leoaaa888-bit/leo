@@ -27,6 +27,7 @@ from scrcpy import (
     trigger_device_screenshot,
     get_notification_state,
     wake_for_unlock,
+    set_device_ime_visible,
     check_adb,
     list_adb_devices,
     preclean_connection,
@@ -450,6 +451,18 @@ def api_screenshot(device_serial: Optional[str] = Query(None)):
     if ok:
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "screenshot failed"}, status_code=500)
+
+
+@app.get("/api/ime")
+async def api_ime(on: int = Query(...), device_serial: Optional[str] = Query(None)):
+    """切换手机自己的屏幕输入法是否弹出（长按网页上的键盘按钮触发）。"""
+    serial = device_serial
+    if serial is None:
+        with session_lock:
+            if active_session is not None:
+                serial = active_session.device_serial
+    state = await asyncio.to_thread(set_device_ime_visible, bool(on), serial)
+    return JSONResponse(state)
 
 
 @app.get("/api/wake")
