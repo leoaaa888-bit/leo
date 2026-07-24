@@ -3338,6 +3338,9 @@
         let controlConnectStartedAt = 0;
         const STALL_MS = 4000;
         const PACKET_STALL_MS = 5000;
+        // 解码器卡死判定：视频包还在流、但画面已 N 毫秒没更新，就重连自愈。
+        // 关键帧每秒一个，4.5 秒还不出画面基本就是卡死了。WebCodecs 和 MSE 都用。
+        const WEDGED_STALL_MS = 4500;
         const KEYFRAME_WAIT_MS = 2500;
         const FORCE_RECONNECT_COOLDOWN_MS = 2500;
         const KEEPALIVE_MS = 8000;
@@ -3722,11 +3725,15 @@
                 }
 
                 // Decoder wedged: video packets keep arriving but nothing gets
-                // drawn for a long time (keyframes come every second).
-                if (useWebCodecs && lastPresentedAt && lastVideoPacketAt
-                    && now - lastPresentedAt > STALL_MS + PACKET_STALL_MS
+                // drawn for a long time (keyframes come every second). This hits
+                // both backends — the MSE <video> can freeze on a display change
+                // (e.g. lock screen → home), and without this it never recovers
+                // on its own, forcing a manual Safari refresh.
+                if (lastPresentedAt && lastVideoPacketAt
+                    && now - lastPresentedAt > WEDGED_STALL_MS
                     && now - lastVideoPacketAt < 1500) {
-                    forceReconnect('decoder wedged: packets flow but no frames');
+                    forceReconnect('decoder wedged: packets flow but no frames ('
+                        + (useWebCodecs ? 'WebCodecs' : 'MSE') + ')');
                 }
             }, 800);
         }
