@@ -3347,6 +3347,9 @@
         let keepaliveTimer = null;
         let stallWatchTimer = null;
         let hiddenAt = 0;
+        // 刚从后台标签切回前台的时刻；切回后短时间内心跳还没补上，别误判链路死。
+        let justResumedAt = 0;
+        const RESUME_GRACE_MS = 3500;
         let recoverDebounceTimer = null;
         let mediaConnectStartedAt = 0;
         let controlConnectStartedAt = 0;
@@ -3769,9 +3772,14 @@
                 }
 
                 // A silent media stream is NORMAL (static remote screen).
-                // Judge link liveness by ping/pong heartbeat instead.
+                // Judge link liveness by ping/pong heartbeat instead. But right
+                // after switching back from a background tab the heartbeat is
+                // stale simply because the keepalive was frozen — skip during the
+                // grace window so we don't tear down a healthy link (recover-from-
+                // background is probing it with a fresh ping meanwhile).
                 const lastHealthAt = Math.max(lastPongAt || 0, lastMediaPacketAt || 0);
-                if (lastHealthAt && now - lastHealthAt > HEALTH_STALL_MS) {
+                if (lastHealthAt && now - lastHealthAt > HEALTH_STALL_MS
+                    && now - justResumedAt > RESUME_GRACE_MS) {
                     forceReconnect('link dead: no pong for ' + (now - lastHealthAt) + 'ms');
                     return;
                 }
@@ -4263,6 +4271,9 @@
         // 隐私伪装：一旦切走浏览器标签 / 切到后台 / 熄屏，立刻盖回“断网小恐龙”页，
         // 回来时需重新点右下角 3 下才进真实界面。连接保留在后台，重新解锁后画面立即恢复。
         function relockGate() {
+            if (isDesktopView) {
+                return;   // 桌面端不做伪装，切走标签也不盖回伪装页
+            }
             if (!gateUnlocked || !offlineGate) {
                 return;
             }
@@ -4346,7 +4357,9 @@
             }
         } catch (e) {}
 
-        if (offlineGate && offlineHotspot && !skipGateOnce) {
+        // 桌面端（电脑）不做伪装：直接进真实界面。伪装页只为手机丢失/被人瞥见时的
+        // 隐私，电脑上没这需求。isDesktopView 看有没有鼠标，缩小窗口骗不过它。
+        if (offlineGate && offlineHotspot && !skipGateOnce && !isDesktopView) {
             const TAP_WINDOW_MS = 2500;
             const TAPS_NEEDED = 3;
             let tapCount = 0;
@@ -4443,6 +4456,9 @@
             if (document.hidden) {
                 return;
             }
+            // 刚切回前台：给一段宽限期，别让 stall watch 因为“后台期间心跳暂停、
+            // 现在心跳旧”就误判 link dead 去重连（重连=手机重启 scrcpy=卡顿）。
+            justResumedAt = Date.now();
             // Debounce focus+visibility+pageshow firing together.
             if (recoverDebounceTimer) {
                 clearTimeout(recoverDebounceTimer);
@@ -4481,22 +4497,24 @@
                 resumeAudioIfNeeded();
                 requestAudioUnlock();
 
-                if (mediaDead || controlDead || linkDead) {
-                    // Clearly broken — reconnect now.
+                if (mediaDead || controlDead) {
+                    // A socket is actually closed — reconnect now.
                     forceReconnect(
                         source + (mediaDead ? ' media-dead' : '')
                         + (controlDead ? ' control-dead' : '')
-                        + (linkDead ? ' link-dead' : '')
                         + (awayMs ? (' away=' + awayMs + 'ms') : ''),
                         { bypassCooldown: true, delayMs: awayMs >= 5000 ? 600 : 450 }
                     );
                     return;
                 }
 
-                if (awayMs >= HIDDEN_FORCE_MS && hadLiveSession) {
-                    // Sockets still look OPEN after a long suspend — they might be
-                    // zombies. Ping first; reconnect only if no pong comes back,
-                    // so a healthy link is never torn down needlessly.
+                // Sockets still OPEN. A stale heartbeat here is NORMAL — switching
+                // to another browser tab freezes this tab's timers, so the keepalive
+                // ping pauses and lastPong goes old even though the link is fine.
+                // So DON'T treat a stale heartbeat as dead: ping first, and reconnect
+                // only if no pong comes back. A needless reconnect restarts scrcpy on
+                // the phone (a multi-second stutter) — exactly the lag on tab-return.
+                if (linkDead || (awayMs >= HIDDEN_FORCE_MS && hadLiveSession)) {
                     probeLinkThenMaybeReconnect(source, awayMs);
                 } else {
                     // Short, healthy return — just nudge connections.
