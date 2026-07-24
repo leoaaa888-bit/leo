@@ -361,6 +361,26 @@ def set_device_ime_visible(visible, device_serial=None):
         return {"ok": False, "visible": None, "error": str(e)}
 
 
+def reboot_device(device_serial=None):
+    """
+    远程重启手机（adb reboot）。手机是 USB 连着的，重启后 adb 一般会自动连回、
+    停在锁屏；网页端点三下解锁会自动唤醒并跳到 PIN 输入界面。
+    """
+    serial = resolve_device_serial(device_serial)
+    if not serial:
+        return {"ok": False, "error": "no-device"}
+    try:
+        _run(
+            adb_cmd("reboot", device_serial=serial),
+            capture_output=True, text=True, timeout=10,
+        )
+        print(f"device reboot: sent to {serial}")
+        return {"ok": True}
+    except Exception as e:
+        print(f"device reboot failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+
 def preclean_connection(device_serial=None, local_port=None):
     """
     Scrub stale adb forward and device-side scrcpy server before a fresh connect.

@@ -28,6 +28,7 @@ from scrcpy import (
     get_notification_state,
     wake_for_unlock,
     set_device_ime_visible,
+    reboot_device,
     check_adb,
     list_adb_devices,
     preclean_connection,
@@ -451,6 +452,18 @@ def api_screenshot(device_serial: Optional[str] = Query(None)):
     if ok:
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "screenshot failed"}, status_code=500)
+
+
+@app.post("/api/reboot")
+async def api_reboot(device_serial: Optional[str] = Query(None)):
+    """远程重启手机（诊断面板里的按钮，需二次确认）。"""
+    serial = device_serial
+    if serial is None:
+        with session_lock:
+            if active_session is not None:
+                serial = active_session.device_serial
+    state = await asyncio.to_thread(reboot_device, serial)
+    return JSONResponse(state)
 
 
 @app.get("/api/ime")

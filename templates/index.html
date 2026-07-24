@@ -1419,6 +1419,19 @@
             color: #07140C;
         }
 
+        .diag-reboot {
+            background: rgba(229, 57, 53, 0.14);
+            border-color: rgba(229, 57, 53, 0.5);
+            color: #ff6b6b;
+        }
+
+        /* 二次确认状态：变实心红，提示“再点一次” */
+        .diag-reboot.confirm {
+            background: #e53935;
+            border-color: #e53935;
+            color: #fff;
+        }
+
         .diag-text {
             flex: 1;
             width: 100%;
@@ -1694,6 +1707,7 @@
             <div class="diag-head">
                 <span>连接诊断</span>
                 <div class="diag-actions">
+                    <button type="button" id="diag-reboot" class="diag-btn diag-reboot">重启手机</button>
                     <button type="button" id="diag-copy" class="diag-btn diag-copy">复制</button>
                     <button type="button" id="diag-close" class="diag-btn diag-close">关闭</button>
                 </div>
@@ -3503,9 +3517,47 @@
             };
             bindTapAction(closeBtn, hideDiagnostics);
             bindTapAction(copyBtn, copyDiagnostics);
+
+            // 重启手机：二次确认。第一次点 → 变红“确认重启”，4 秒内再点才真重启。
+            const rebootBtn = document.getElementById('diag-reboot');
+            let rebootConfirm = false;
+            let rebootTimer = null;
+            const resetRebootBtn = () => {
+                rebootConfirm = false;
+                if (rebootTimer) { clearTimeout(rebootTimer); rebootTimer = null; }
+                if (rebootBtn) {
+                    rebootBtn.textContent = '重启手机';
+                    rebootBtn.classList.remove('confirm');
+                }
+            };
+            const onReboot = () => {
+                if (!rebootBtn) return;
+                if (!rebootConfirm) {
+                    rebootConfirm = true;
+                    rebootBtn.textContent = '确认重启？';
+                    rebootBtn.classList.add('confirm');
+                    rebootTimer = setTimeout(resetRebootBtn, 4000);
+                    return;
+                }
+                resetRebootBtn();
+                rebootBtn.textContent = '重启中…';
+                fetch('/api/reboot', { method: 'POST' })
+                    .then((r) => r.ok ? r.json() : null)
+                    .then((d) => {
+                        showKeyboardHint(d && d.ok
+                            ? '手机正在重启，约 1 分钟后点三下解锁进入'
+                            : '重启失败，请检查连接');
+                    })
+                    .catch(() => showKeyboardHint('重启失败，请检查连接'))
+                    .finally(() => { rebootBtn.textContent = '重启手机'; });
+                hideDiagnostics();
+            };
+            bindTapAction(rebootBtn, onReboot);
+
             if (overlay) {
                 overlay.addEventListener('click', (e) => {
                     if (e.target === overlay) {
+                        resetRebootBtn();     // 关闭面板时复位确认态
                         hideDiagnostics();
                     }
                 });
