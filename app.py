@@ -528,20 +528,29 @@ async def api_notifications(device_serial: Optional[str] = Query(None)):
     return JSONResponse(state)
 
 
+# 浏览器会自动请求这两个根路径，而根路径没法加版本号/改名，一旦被缓存就长期
+# 钉住旧图（Safari 的 favicon 库尤其顽固）。所以这里显式禁缓存。
+_ICON_NO_CACHE = {
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
 @app.get("/favicon.ico")
 def favicon():
-    ico = STATIC_DIR / "icons" / "favicon.ico"
+    ico = STATIC_DIR / "icons" / "globe.ico"
     if ico.is_file():
-        return FileResponse(ico)
-    return FileResponse(STATIC_DIR / "icons" / "favicon.svg")
+        return FileResponse(ico, headers=_ICON_NO_CACHE)
+    return FileResponse(STATIC_DIR / "icons" / "globe.svg", headers=_ICON_NO_CACHE)
 
 
 @app.get("/apple-touch-icon.png")
 def apple_touch_icon():
-    png = STATIC_DIR / "icons" / "apple-touch-icon.png"
+    png = STATIC_DIR / "icons" / "globe-touch.png"
     if png.is_file():
-        return FileResponse(png)
-    return FileResponse(STATIC_DIR / "icons" / "icon.svg")
+        return FileResponse(png, headers=_ICON_NO_CACHE)
+    return FileResponse(STATIC_DIR / "icons" / "globe-full.svg", headers=_ICON_NO_CACHE)
 
 
 @app.websocket("/ws/media")
