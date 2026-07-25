@@ -1257,6 +1257,10 @@
             user-select: none;
             -webkit-tap-highlight-color: transparent;
             cursor: default;
+            /* 禁掉双指缩放/拖动：body 上的 manipulation 只挡双击放大，挡不住捏合。
+               投屏区本来就是 touch-action:none，所以正常页面缩放不了；伪装页少了
+               这一条才会被放大，两边行为不一致。点击事件不受影响，三下唤醒照常。 */
+            touch-action: none;
         }
 
         @media (prefers-color-scheme: dark) {
@@ -1373,6 +1377,96 @@
         }
 
         /* —— Diagnostics overlay (long-press the floating ball) —— */
+        /* —— 锁屏 PIN 输入框（盖在黑屏之上） —— */
+        .pin-gate {
+            position: fixed;
+            inset: 0;
+            z-index: 100001;   /* 高于诊断面板，锁屏时它最优先 */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(0, 0, 0, 0.72);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+        }
+
+        .pin-gate[hidden] { display: none; }
+
+        .pin-card {
+            width: 100%;
+            max-width: 320px;
+            padding: 22px 20px 18px;
+            border-radius: 16px;
+            border: 1px solid var(--line-strong);
+            background: rgba(18, 20, 26, 0.96);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+            text-align: center;
+        }
+
+        .pin-title {
+            font-size: 17px;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+
+        .pin-sub {
+            font-size: 12.5px;
+            color: var(--faint);
+            line-height: 1.5;
+            margin-bottom: 16px;
+        }
+
+        .pin-input {
+            width: 100%;
+            /* 16px 是底线：更小 iOS Safari 会在聚焦时自动放大整个页面 */
+            font-size: 18px;
+            letter-spacing: 0.18em;
+            text-align: center;
+            padding: 11px 12px;
+            border-radius: 10px;
+            border: 1px solid var(--line-strong);
+            background: rgba(0, 0, 0, 0.35);
+            color: var(--text);
+            appearance: none;
+        }
+
+        .pin-input:focus {
+            outline: none;
+            border-color: rgba(61, 220, 132, 0.55);
+        }
+
+        .pin-remember {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            margin-top: 12px;
+            font-size: 12.5px;
+            color: var(--faint);
+        }
+
+        .pin-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        .pin-btn {
+            flex: 1;
+            padding: 11px 0;
+            font-size: 15px;
+            border-radius: 10px;
+            border: 1px solid var(--line-strong);
+            background: rgba(255, 255, 255, 0.06);
+            cursor: pointer;
+        }
+
+        .pin-btn-primary {
+            border-color: rgba(61, 220, 132, 0.5);
+            background: rgba(61, 220, 132, 0.16);
+        }
+
         .diag-overlay {
             position: fixed;
             inset: 0;
@@ -1757,6 +1851,24 @@
         <div class="offline-hotspot" id="offline-hotspot" aria-hidden="true"></div>
     </div>
 
+    <!-- 锁屏时的 PIN 输入框：OPPO(ColorOS) 的锁屏是 FLAG_SECURE，在投屏里是一整片
+         黑屏、看不到密码盘，所以在网页这一侧收 PIN，用盲解锁发进去。 -->
+    <div class="pin-gate" id="pin-gate" hidden>
+        <div class="pin-card">
+            <p class="pin-title">手机已锁屏</p>
+            <p class="pin-sub">锁屏画面无法显示，请输入手机 PIN 解锁</p>
+            <input type="password" id="pin-gate-input" class="pin-input" inputmode="numeric"
+                   autocomplete="off" placeholder="手机 PIN" aria-label="手机 PIN" />
+            <label class="pin-remember">
+                <input type="checkbox" id="pin-gate-remember" /> 记住，下次自动解锁
+            </label>
+            <div class="pin-actions">
+                <button type="button" id="pin-gate-cancel" class="pin-btn">稍后</button>
+                <button type="button" id="pin-gate-ok" class="pin-btn pin-btn-primary">解锁</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Diagnostics: long-press the floating ball to open. Lists recent
          reconnects so disconnection causes can be reported. -->
     <div class="diag-overlay" id="diag-overlay">
@@ -1897,11 +2009,12 @@
 
         // 把 PIN 发到后端盲解锁（PIN 走请求体，不进 URL / 日志）。
         // quiet=true 时不提示“正在解锁/已解锁”（自动解锁用），但失败仍提示。
+        // 返回 Promise<boolean>：调用方（如 PIN 弹框）据此决定是否关闭。
         function sendUnlock(pin, quiet) {
             if (!quiet) {
                 showKeyboardHint('正在解锁…');
             }
-            fetch('/api/unlock', {
+            return fetch('/api/unlock', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ pin: pin }),
@@ -1910,23 +2023,107 @@
                 .then((d) => {
                     if (d && d.ok) {
                         if (!quiet) { showKeyboardHint('已解锁'); }
-                    } else if (d && d.error === 'invalid-pin') {
+                        return true;
+                    }
+                    if (d && d.error === 'invalid-pin') {
                         showKeyboardHint('PIN 格式不对（4–16 位数字）');
                     } else {
                         showKeyboardHint('解锁失败，PIN 是否正确？');
                     }
+                    return false;
                 })
-                .catch(() => { if (!quiet) { showKeyboardHint('解锁请求失败，检查连接'); } });
+                .catch(() => {
+                    if (!quiet) { showKeyboardHint('解锁请求失败，检查连接'); }
+                    return false;
+                });
         }
 
-        // 进入 / 首帧时的动作：记住了 PIN 就自动盲解锁，否则只唤醒（谷歌2 这类
-        // 锁屏可见的机型，唤醒后自己在画面里输密码即可）。
+        // 进入 / 首帧时的动作：
+        //   存了 PIN            → 直接自动盲解锁，落到桌面
+        //   没存 PIN 且手机锁着 → 弹 PIN 输入框（仅 OPPO 这种锁屏黑屏的机型，
+        //                         否则用户面对的就是一整片黑屏，无从下手）
+        //   没锁                → 只唤醒
+        // 谷歌2 锁屏画面看得见，唤醒后直接在画面上滑动输密码即可，不弹框。
         function wakeOrUnlock(quiet) {
             if (loadRememberPin() && loadDevicePin()) {
                 sendUnlock(loadDevicePin(), quiet);
-            } else {
-                fetch('/api/wake?ts=' + Date.now(), { cache: 'no-store' }).catch(() => {});
+                return;
             }
+            fetch('/api/wake?ts=' + Date.now(), { cache: 'no-store' })
+                .then((r) => (r.ok ? r.json() : null))
+                .then((d) => {
+                    if (d && d.locked && isTargetDevice) {
+                        showPinPrompt();
+                    }
+                })
+                .catch(() => {});
+        }
+
+        // —— 锁屏 PIN 输入框 ——
+        // 自带一份 tap 绑定：诊断面板里那个 bindTapAction 是定义在它自己作用域内的
+        // const，这里取不到。iOS 上必须同时处理 touchend 与 click，并互相去重，
+        // 否则会触发两次（也会连带把页面放大）。
+        function bindPinTap(el, action) {
+            if (!el) { return; }
+            let touchHandled = false;
+            el.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                touchHandled = true;
+                action();
+            }, { passive: false });
+            el.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (touchHandled) { touchHandled = false; return; }
+                action();
+            });
+        }
+
+        let pinPromptBound = false;
+        function hidePinPrompt() {
+            const gate = document.getElementById('pin-gate');
+            if (!gate) { return; }
+            gate.hidden = true;
+            const input = document.getElementById('pin-gate-input');
+            if (input) { input.value = ''; input.blur(); }
+        }
+        function showPinPrompt() {
+            const gate = document.getElementById('pin-gate');
+            const input = document.getElementById('pin-gate-input');
+            const remember = document.getElementById('pin-gate-remember');
+            if (!gate || !input) { return; }
+            if (gate.hidden === false) { return; }   // 已经开着，别重复弹
+            gate.hidden = false;
+            if (remember) { remember.checked = loadRememberPin(); }
+
+            if (!pinPromptBound) {
+                pinPromptBound = true;
+                const submit = () => {
+                    const pin = (input.value || '').trim();
+                    if (!/^\d{4,16}$/.test(pin)) {
+                        showKeyboardHint('请输入 4–16 位数字 PIN');
+                        return;
+                    }
+                    if (remember && remember.checked) {
+                        saveDevicePin(pin);
+                        saveRememberPin(true);
+                    } else {
+                        saveDevicePin('');
+                        saveRememberPin(false);
+                    }
+                    sendUnlock(pin, false).then((ok) => {
+                        if (ok) { hidePinPrompt(); }
+                        else if (input) { input.value = ''; input.focus(); }
+                    });
+                };
+                bindPinTap(document.getElementById('pin-gate-ok'), submit);
+                bindPinTap(document.getElementById('pin-gate-cancel'), hidePinPrompt);
+                // 回车直接提交，省一次点击
+                input.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+                });
+            }
+            // iOS 上要等弹框真的显示出来再聚焦，否则键盘不弹
+            setTimeout(() => { try { input.focus(); } catch (e) {} }, 60);
         }
 
         function loadQualityPreset() {
@@ -4480,10 +4677,10 @@
         // —— 消息通知红点：QQ / 微信 / Soul 有新消息时悬浮球变红 ——
         const NOTIFY_POLL_MS = 5000;
         let notifyTimer = null;
-        // “锁存”未读集合：一旦某 App 来消息就加入，一直保持点亮，直到该 App 被打开
-        // （切到前台）才移除。这样即使系统把通知短时间内自动清掉、或刚好卡在两次
-        // 轮询之间，也不会漏掉那一下。
-        const notifyPending = new Set();
+        // 不做锁存：直接跟随服务端的判断。
+        // 曾经用一个“未读锁存集合”防漏消息，但它唯一的清除途径是“打开那个 App”，
+        // 于是通知以别的方式消失时（在手机上直接看了/划掉了/系统自动清掉）跑马灯
+        // 会一直亮着，而消息早就没了。服务端已经排除了前台 App，d.alert 就是答案。
         function applyNotifyAlert(on) {
             const fab = document.getElementById('fab-tools');
             if (fab) {
@@ -4500,15 +4697,8 @@
                     if (!d) {
                         return;
                     }
-                    // 新来消息的 App 加入锁存集合。
-                    if (Array.isArray(d.packages)) {
-                        d.packages.forEach((p) => notifyPending.add(p));
-                    }
-                    // 打开某 App（它切到前台）就清掉它的红点。
-                    if (d.foreground) {
-                        notifyPending.delete(d.foreground);
-                    }
-                    applyNotifyAlert(notifyPending.size > 0);
+                    // 服务端已把“在前台的 App”排除掉，所以打开对应 App 就会自动熄灭。
+                    applyNotifyAlert(!!d.alert);
 
                     // 手机睡着了（息屏）→ 盖回伪装页，这样随时可以点三下唤醒进 PIN。
                     // 只看“是否睡着”，不看“是否锁定”：正在输 PIN 时手机是醒着的，
@@ -4573,6 +4763,11 @@
             // events, not pointerup — preventDefault() there doesn't stop it.
             // Cancel it directly on touchend so 3 quick taps never zoom the page.
             offlineHotspot.addEventListener('touchend', (e) => { e.preventDefault(); }, { passive: false });
+            // 双指捏合缩放：CSS 的 touch-action:none 已经能挡住，这里再兜一层
+            // iOS Safari 私有的 gesture 事件，老版本 Safari 只认这个。
+            ['gesturestart', 'gesturechange', 'gestureend'].forEach((evt) => {
+                offlineGate.addEventListener(evt, (e) => { e.preventDefault(); }, { passive: false });
+            });
         } else {
             // Gate markup missing, or a quality/audio switch — skip straight in.
             // 若这是"切画质整页重载"回来的：贴回重载前定格的那一帧，并进入安静切换

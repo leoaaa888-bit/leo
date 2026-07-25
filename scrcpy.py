@@ -1,4 +1,5 @@
 from threading import Thread, Lock
+from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import socket
 import shutil
@@ -159,31 +160,45 @@ def trigger_device_screenshot(device_serial=None):
 # 打开对应 App（切到前台）后熄灭。
 NOTIFY_TARGET_PACKAGES = ("com.tencent.mm", "com.tencent.mobileqq", "cn.soulapp.android")
 
-# 视为“常驻/非消息”的通知标志位——微信/QQ 的“运行中”前台服务通知带这些位，
-# 一律跳过，避免悬浮球一直红着。
+# 视为“不是真实消息”的通知标志位，一律跳过，避免悬浮球无消息也亮着：
+#   ONGOING / NO_CLEAR / FGSRV —— 常驻或前台服务通知（如“微信运行中”）
+#   GROUP_SUMMARY / AUTOGROUP_SUMMARY —— Android 自动分组产生的“摘要头”，
+#     它只是子通知的容器，本身不是消息；真消息被清掉后摘要常常还赖着不走，
+#     只数子通知、跳过摘要，才不会误亮。
 _NOTIFY_FLAG_ONGOING = 0x00000002
 _NOTIFY_FLAG_NO_CLEAR = 0x00000020
 _NOTIFY_FLAG_FOREGROUND_SERVICE = 0x00000040
-_NOTIFY_PERSISTENT_FLAGS = (
-    _NOTIFY_FLAG_ONGOING | _NOTIFY_FLAG_NO_CLEAR | _NOTIFY_FLAG_FOREGROUND_SERVICE
+_NOTIFY_FLAG_GROUP_SUMMARY = 0x00000200
+_NOTIFY_FLAG_AUTOGROUP_SUMMARY = 0x00000400
+_NOTIFY_SKIP_FLAGS = (
+    _NOTIFY_FLAG_ONGOING
+    | _NOTIFY_FLAG_NO_CLEAR
+    | _NOTIFY_FLAG_FOREGROUND_SERVICE
+    | _NOTIFY_FLAG_GROUP_SUMMARY
+    | _NOTIFY_FLAG_AUTOGROUP_SUMMARY
 )
 # 新版 Android（实测 OPPO/Android 16）把 flags 打成符号名而不是十六进制，
-# 例如 flags=AUTO_CANCEL、flags=FGSRV|NO_CLEAR。只认 0x… 的话这道闸门会形同虚设。
-_NOTIFY_PERSISTENT_TOKENS = ("ONGOING", "NO_CLEAR", "FGSRV", "FOREGROUND_SERVICE")
+# 例如 flags=AUTO_CANCEL|GROUP_SUMMARY。只认 0x… 的话这道闸门会形同虚设。
+_NOTIFY_SKIP_TOKENS = (
+    "ONGOING", "NO_CLEAR", "FGSRV", "FOREGROUND_SERVICE",
+    "GROUP_SUMMARY",   # 同时覆盖 AUTOGROUP_SUMMARY（子串包含）
+)
 
 
-def _notification_persistent(line):
-    """这条通知是不是常驻/前台服务通知（如“微信运行中”）。
+def _notification_skip(line):
+    """这条通知是不是“不该点亮悬浮球”的那种（常驻通知、或自动分组的摘要头）。
     dumpsys 在不同版本上把 flags 打成十六进制或符号名，两种都要认。"""
-    m = re.search(r"flags=(\S+)", line)
+    # 用 [^\s)]+ 而不是 \S+：flags 若正好在行尾，\S+ 会把后面的 "))" 一起吞掉，
+    # 导致十六进制形式匹配不上而漏判。
+    m = re.search(r"flags=([^\s)]+)", line)
     if not m:
         return False
     raw = m.group(1)
     hex_m = re.fullmatch(r"0x([0-9a-fA-F]+)", raw)
     if hex_m:
-        return bool(int(hex_m.group(1), 16) & _NOTIFY_PERSISTENT_FLAGS)
+        return bool(int(hex_m.group(1), 16) & _NOTIFY_SKIP_FLAGS)
     upper = raw.upper()
-    return any(tok in upper for tok in _NOTIFY_PERSISTENT_TOKENS)
+    return any(tok in upper for tok in _NOTIFY_SKIP_TOKENS)
 
 # 一次 adb 往返同时取“前台 App”“屏幕是否亮着”“通知列表”，用标记分段。
 # 屏幕状态给网页判断：手机睡着了就把伪装页盖回来，让用户可以点三下唤醒进 PIN。
@@ -269,8 +284,8 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
                 continue  # 只跳过 IMPORTANCE_NONE（被彻底关掉的通知）。
                 # 注意：MIN(=1) 也要算——Soul 的“聊天消息”渠道被降级成 MIN 后
                 # 仍是真实消息（category=msg、可清除），之前一并跳过导致跑马灯不亮。
-            if _notification_persistent(line):
-                continue  # 常驻/前台服务通知（如“微信运行中”），跳过
+            if _notification_skip(line):
+                continue  # 常驻通知 或 自动分组的摘要头，都不算真实消息
             if pkg not in alerting:
                 alerting.append(pkg)
 
@@ -341,8 +356,10 @@ def wake_for_unlock(device_serial=None):
     awake = "mWakefulness=Awake" in out
     locked = "deviceLocked=1" in out
 
+    # locked 一并返回：网页据此决定要不要弹 PIN 输入框（锁屏黑屏的机型看不到密码盘）。
+    # 这个状态本函数已经查过了，返回它不多花一次 adb。
     if awake and not locked:
-        return {"ok": True, "action": "none"}  # 正在用，别打扰
+        return {"ok": True, "action": "none", "locked": False, "awake": True}
 
     try:
         _run(
@@ -351,7 +368,7 @@ def wake_for_unlock(device_serial=None):
         )
         if not locked:
             print("wake: screen on (device was not locked)")
-            return {"ok": True, "action": "woke"}
+            return {"ok": True, "action": "woke", "locked": False, "awake": True}
 
         time.sleep(0.5)  # 等锁屏界面起来再上滑
         size = _get_screen_size(serial)
@@ -367,10 +384,10 @@ def wake_for_unlock(device_serial=None):
                 capture_output=True, text=True, timeout=6,
             )
         print("wake: screen on + unlock prompt shown")
-        return {"ok": True, "action": "woke+unlock-prompt"}
+        return {"ok": True, "action": "woke+unlock-prompt", "locked": True, "awake": True}
     except Exception as e:
         print(f"wake failed: {e}")
-        return {"ok": False, "action": "wake-failed", "error": str(e)}
+        return {"ok": False, "action": "wake-failed", "error": str(e), "locked": locked}
 
 
 def set_device_ime_visible(visible, device_serial=None):
@@ -488,26 +505,38 @@ def preclean_connection(device_serial=None, local_port=None):
     """
     serial = resolve_device_serial(device_serial)
     port = _resolve_local_port(local_port)
-    try:
-        _run(
-            adb_cmd("forward", "--remove", f"tcp:{port}", device_serial=serial),
-            capture_output=True, text=True, timeout=3,
-        )
-    except Exception:
-        pass
-    try:
-        _run(
-            adb_cmd(
-                "shell",
-                "pkill -f com.genymobile.scrcpy.Server 2>/dev/null; "
-                "pkill -f scrcpy-server 2>/dev/null; true",
-                device_serial=serial,
-            ),
-            capture_output=True, text=True, timeout=4,
-        )
-    except Exception:
-        pass
-    time.sleep(0.12)
+    # forward 清理和 pkill 互不依赖，并行做省掉一次往返（各约 50 / 210ms）。
+    # 注意 setup_adb_forward() 自己也会先 remove 一遍，这里的 remove 只是兜底。
+    def _drop_forward():
+        try:
+            _run(
+                adb_cmd("forward", "--remove", f"tcp:{port}", device_serial=serial),
+                capture_output=True, text=True, timeout=3,
+            )
+        except Exception:
+            pass
+
+    def _kill_server():
+        try:
+            _run(
+                adb_cmd(
+                    "shell",
+                    "pkill -f com.genymobile.scrcpy.Server 2>/dev/null; "
+                    "pkill -f scrcpy-server 2>/dev/null; true",
+                    device_serial=serial,
+                ),
+                capture_output=True, text=True, timeout=4,
+            )
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fs = [pool.submit(_drop_forward), pool.submit(_kill_server)]
+        for f in fs:
+            f.result()
+    # 只需给设备一点时间释放 localabstract 套接字名；0.12s 是保守值，0.04s 够用
+    # （后面 _connect_socket 本来就以 50ms 间隔重试，慢一点也能自愈）。
+    time.sleep(0.04)
 
 
 class Scrcpy:
@@ -838,13 +867,23 @@ class Scrcpy:
                 self.device_serial = devices[0]
                 print(f"Using device: {self.device_serial}")
 
-            preclean_connection(self.device_serial, self.local_port)
+            # 这三步互不依赖，但每步都是一次 adb 往返（实测 preclean≈380ms、
+            # jar 检查≈134ms、flag_secure≈176ms）。串行做要 ~0.7s，并行只要最慢那一步。
+            # 约束：三者都必须在 setup_adb_forward / 启动服务之前完成，所以在此 join。
+            t0 = time.monotonic()
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                f_preclean = pool.submit(preclean_connection, self.device_serial, self.local_port)
+                f_push = pool.submit(self.push_server_to_device)
+                f_secure = pool.submit(self.try_disable_flag_secure)
+                pushed = f_push.result()
+                f_preclean.result()
+                f_secure.result()
+            print(f"pre-start probes done in {int((time.monotonic() - t0) * 1000)}ms")
 
-            if not self.push_server_to_device():
+            if not pushed:
                 print("Failed to push server files to device.")
                 return False
 
-            self.try_disable_flag_secure()
             self.setup_adb_forward()
             self.android_thread = Thread(target=self.start_server, daemon=True)
             self.android_thread.start()
