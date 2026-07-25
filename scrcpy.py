@@ -112,6 +112,28 @@ def resolve_device_serial(requested=None):
     return None
 
 
+_device_model_cache = {}
+
+
+def get_device_model(device_serial=None):
+    """设备型号（ro.product.model，如 OPPO=PLS120 / 谷歌2=Pixel 2）。
+    页面据此区分是哪台手机，做设备专属版面。结果缓存，避免每次请求都跑 adb。"""
+    serial = resolve_device_serial(device_serial)
+    if not serial:
+        return None
+    if serial in _device_model_cache:
+        return _device_model_cache[serial]
+    try:
+        r = _run(adb_cmd("shell", "getprop ro.product.model", device_serial=serial),
+                 capture_output=True, text=True, timeout=5)
+        model = (r.stdout or "").strip()
+    except Exception:
+        model = ""
+    if model:
+        _device_model_cache[serial] = model
+    return model or None
+
+
 def trigger_device_screenshot(device_serial=None):
     """
     触发设备自带的系统截屏（keyevent 120 = KEYCODE_SYSRQ）。
@@ -145,6 +167,23 @@ _NOTIFY_FLAG_FOREGROUND_SERVICE = 0x00000040
 _NOTIFY_PERSISTENT_FLAGS = (
     _NOTIFY_FLAG_ONGOING | _NOTIFY_FLAG_NO_CLEAR | _NOTIFY_FLAG_FOREGROUND_SERVICE
 )
+# 新版 Android（实测 OPPO/Android 16）把 flags 打成符号名而不是十六进制，
+# 例如 flags=AUTO_CANCEL、flags=FGSRV|NO_CLEAR。只认 0x… 的话这道闸门会形同虚设。
+_NOTIFY_PERSISTENT_TOKENS = ("ONGOING", "NO_CLEAR", "FGSRV", "FOREGROUND_SERVICE")
+
+
+def _notification_persistent(line):
+    """这条通知是不是常驻/前台服务通知（如“微信运行中”）。
+    dumpsys 在不同版本上把 flags 打成十六进制或符号名，两种都要认。"""
+    m = re.search(r"flags=(\S+)", line)
+    if not m:
+        return False
+    raw = m.group(1)
+    hex_m = re.fullmatch(r"0x([0-9a-fA-F]+)", raw)
+    if hex_m:
+        return bool(int(hex_m.group(1), 16) & _NOTIFY_PERSISTENT_FLAGS)
+    upper = raw.upper()
+    return any(tok in upper for tok in _NOTIFY_PERSISTENT_TOKENS)
 
 # 一次 adb 往返同时取“前台 App”“屏幕是否亮着”“通知列表”，用标记分段。
 # 屏幕状态给网页判断：手机睡着了就把伪装页盖回来，让用户可以点三下唤醒进 PIN。
@@ -226,11 +265,11 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
             pkg = m.group(1)
             imp_m = re.search(r"importance=(-?\d+)", line)
             importance = int(imp_m.group(1)) if imp_m else 3
-            fl_m = re.search(r"flags=0x([0-9a-fA-F]+)", line)
-            flags = int(fl_m.group(1), 16) if fl_m else 0
-            if importance <= 1:
-                continue  # IMPORTANCE_MIN/NONE：不是真正的消息提醒
-            if flags & _NOTIFY_PERSISTENT_FLAGS:
+            if importance <= 0:
+                continue  # 只跳过 IMPORTANCE_NONE（被彻底关掉的通知）。
+                # 注意：MIN(=1) 也要算——Soul 的“聊天消息”渠道被降级成 MIN 后
+                # 仍是真实消息（category=msg、可清除），之前一并跳过导致跑马灯不亮。
+            if _notification_persistent(line):
                 continue  # 常驻/前台服务通知（如“微信运行中”），跳过
             if pkg not in alerting:
                 alerting.append(pkg)
@@ -378,6 +417,67 @@ def reboot_device(device_serial=None):
         return {"ok": True}
     except Exception as e:
         print(f"device reboot failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+def _device_locked(serial):
+    try:
+        r = _run(
+            adb_cmd("shell", "dumpsys trust | grep -o 'deviceLocked=[01]' | head -1",
+                    device_serial=serial),
+            capture_output=True, text=True, timeout=5,
+        )
+        return "deviceLocked=1" in (r.stdout or "")
+    except Exception:
+        return None
+
+
+def unlock_device(pin, device_serial=None):
+    """
+    盲解锁：不看画面直接把 PIN 发进锁屏。用于 OPPO/ColorOS 这类把整个锁屏标成
+    安全层（scrcpy 里黑屏、看不到密码盘）的机型——实测注入的按键仍能进密码框。
+    唤醒 → 上滑调出密码盘 → 逐位发数字键（KEYCODE_0..9 = 7..16）→ 回车提交。
+    注意：全程不打印 PIN；PIN 只在本函数内用于拼按键，不落任何日志。
+    """
+    serial = resolve_device_serial(device_serial)
+    if not serial:
+        return {"ok": False, "error": "no-device"}
+    pin = str(pin or "").strip()
+    if not pin.isdigit() or not (4 <= len(pin) <= 16):
+        return {"ok": False, "error": "invalid-pin"}
+    try:
+        _run(adb_cmd("shell", "input keyevent KEYCODE_WAKEUP", device_serial=serial),
+             capture_output=True, text=True, timeout=5)
+        time.sleep(0.4)
+        # 已经是解锁状态就别再输 PIN（避免把数字打进某个 App）。
+        if _device_locked(serial) is False:
+            return {"ok": True, "already": True}
+
+        size = _get_screen_size(serial)
+        if size:
+            w, h = size
+            x = w // 2
+            _run(adb_cmd("shell",
+                         f"input swipe {x} {int(h * 0.85)} {x} {int(h * 0.30)} 150",
+                         device_serial=serial),
+                 capture_output=True, text=True, timeout=6)
+            time.sleep(0.7)
+
+        # 逐位数字键；一条命令发完，减少往返。
+        keys = " ".join(str(7 + int(c)) for c in pin)
+        _run(adb_cmd("shell", f"input keyevent {keys}", device_serial=serial),
+             capture_output=True, text=True, timeout=8)
+        time.sleep(0.3)
+        # 提交（很多 PIN 到位会自动提交，此时回车落在桌面上无害）。
+        _run(adb_cmd("shell", "input keyevent 66", device_serial=serial),
+             capture_output=True, text=True, timeout=5)
+        time.sleep(0.6)
+
+        locked = _device_locked(serial)
+        print(f"unlock: {'still locked' if locked else 'unlocked'}")
+        return {"ok": locked is False, "locked": bool(locked)}
+    except Exception as e:
+        print(f"unlock failed: {e}")
         return {"ok": False, "error": str(e)}
 
 

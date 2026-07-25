@@ -4,20 +4,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>Web-scrcpy</title>
-    <meta name="description" content="在浏览器中控制 Android 屏幕">
+    <title>IP/DNS</title>
+    <meta name="description" content="IP / DNS 网络工具">
     <meta name="theme-color" content="#0E1014">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Web-scrcpy">
-    <meta name="application-name" content="Web-scrcpy">
-    <link rel="manifest" href="/static/site.webmanifest">
-    <link rel="icon" href="/static/icons/favicon.ico" sizes="any">
-    <link rel="icon" type="image/svg+xml" href="/static/icons/favicon.svg">
-    <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
-    <link rel="icon" type="image/png" sizes="16x16" href="/static/icons/icon-16.png">
-    <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-title" content="IP/DNS">
+    <meta name="application-name" content="IP/DNS">
+    <!-- 图标全部带 ?v= 版本号：/static 走的是普通缓存，浏览器（尤其 Safari 的
+         favicon 库）会长期缓存旧图。换图标后必须同步改这个版本号才能生效。 -->
+    <link rel="manifest" href="/static/site.webmanifest?v=2">
+    <link rel="icon" href="/static/icons/favicon.ico?v=2" sizes="any">
+    <link rel="icon" type="image/svg+xml" href="/static/icons/favicon.svg?v=2">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png?v=2">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/icons/icon-16.png?v=2">
+    <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png?v=2">
+    <!-- Safari 固定标签页：只认 mask-icon 的单色 SVG，color 决定上色 -->
+    <link rel="mask-icon" href="/static/icons/safari-pinned-tab.svg?v=2" color="#2D7FF9">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -857,6 +861,25 @@
                 overflow: hidden;
             }
 
+            /* —— OPPO(PLS120) 专属：谷歌2 等机型不带此标记，不受影响。 —— */
+            /* 让出 iPhone 状态栏(灵动岛)/home 指示条安全区，否则 OPPO 顶部电量/Wi-Fi 被灵动岛盖住。 */
+            :root[data-device-model="PLS120"] .app {
+                grid-template-rows:
+                    env(safe-area-inset-top, 0px)
+                    minmax(0, 1fr)
+                    env(safe-area-inset-bottom, 0px);
+                grid-template-areas:
+                    "safetop"
+                    "main"
+                    "safebot";
+            }
+
+            /* 隐藏 App 自带的导航栏：OPPO 自己的手势栏(◁ ○ ☰)已显示在投屏画面里，
+               两者功能重复。省下的高度全部给画面——画面约放大 7%，左右黑边变窄。 */
+            :root[data-device-model="PLS120"] .nav-bar {
+                display: none;
+            }
+
             .device-frame {
                 background: transparent;
                 border: none;
@@ -932,8 +955,11 @@
                 display: grid;
                 place-items: center;
                 position: fixed;
-                right: 10px;
-                bottom: calc(16px + var(--safe-b));
+                /* 首次进入：贴右侧边缘、垂直居中。用 calc(50% - 半个球高) 而不是
+                   transform，避免和拖动时 JS 写入的 left/top 打架。8px 与拖动
+                   夹紧用的 FAB_MARGIN 一致，默认位置正好等于能拖到的最右边。 */
+                right: 8px;
+                top: calc(50% - 24px);
                 z-index: 31;
                 width: 48px;
                 height: 48px;
@@ -1432,6 +1458,37 @@
             color: #fff;
         }
 
+        .diag-unlock {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 16px 14px;
+        }
+
+        .unlock-pin {
+            flex: 1;
+            min-width: 0;
+            appearance: none;
+            border: 1px solid var(--line-strong);
+            background: #0E1014;
+            color: var(--text);
+            font-size: 16px;   /* ≥16px 防 iOS 聚焦缩放 */
+            padding: 8px 12px;
+            border-radius: 8px;
+            outline: none;
+            font-family: inherit;
+        }
+
+        .unlock-remember {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 13px;
+            color: var(--muted);
+            white-space: nowrap;
+            cursor: pointer;
+        }
+
         .diag-text {
             flex: 1;
             width: 100%;
@@ -1570,11 +1627,11 @@
         <header class="topbar">
             <div class="brand">
                 <div class="brand-mark" aria-hidden="true">
-                    <img src="/static/icons/favicon.svg" alt="" width="18" height="18">
+                    <!-- ?v= 用来破浏览器缓存：换了图标文件但不改这里的话，旧图会一直被缓存 -->
+                    <img src="/static/icons/favicon.svg?v=2" alt="" width="18" height="18">
                 </div>
                 <div class="brand-text">
-                    <strong>Web-scrcpy</strong>
-                    <small>CONTROL</small>
+                    <strong>IP/DNS</strong>
                 </div>
             </div>
 
@@ -1713,6 +1770,14 @@
                 </div>
             </div>
             <textarea id="diag-text" class="diag-text" readonly wrap="off" aria-label="诊断日志"></textarea>
+
+            <!-- 盲解锁：锁屏黑屏的机型（如 OPPO/ColorOS）用它把 PIN 发进去解锁。 -->
+            <div class="diag-unlock">
+                <input type="password" id="unlock-pin" class="unlock-pin" inputmode="numeric"
+                       autocomplete="off" placeholder="手机 PIN（盲解锁）" aria-label="手机 PIN" />
+                <label class="unlock-remember"><input type="checkbox" id="unlock-remember" /> 记住</label>
+                <button type="button" id="unlock-send" class="diag-btn diag-copy">解锁</button>
+            </div>
         </div>
     </div>
 
@@ -1817,6 +1882,51 @@
         }
         function saveInputMode(mode) {
             localStorage.setItem(INPUT_MODE_KEY, mode);
+        }
+
+        // 盲解锁 PIN（可选记住）。仅存在本机浏览器；用于锁屏黑屏机型远程解锁。
+        const DEVICE_PIN_KEY = 'devicePin';
+        const REMEMBER_PIN_KEY = 'rememberPin';
+        function loadDevicePin() { return localStorage.getItem(DEVICE_PIN_KEY) || ''; }
+        function saveDevicePin(pin) {
+            if (pin) { localStorage.setItem(DEVICE_PIN_KEY, pin); }
+            else { localStorage.removeItem(DEVICE_PIN_KEY); }
+        }
+        function loadRememberPin() { return localStorage.getItem(REMEMBER_PIN_KEY) === 'true'; }
+        function saveRememberPin(on) { localStorage.setItem(REMEMBER_PIN_KEY, on ? 'true' : 'false'); }
+
+        // 把 PIN 发到后端盲解锁（PIN 走请求体，不进 URL / 日志）。
+        // quiet=true 时不提示“正在解锁/已解锁”（自动解锁用），但失败仍提示。
+        function sendUnlock(pin, quiet) {
+            if (!quiet) {
+                showKeyboardHint('正在解锁…');
+            }
+            fetch('/api/unlock', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pin: pin }),
+            })
+                .then((r) => (r.ok ? r.json() : null))
+                .then((d) => {
+                    if (d && d.ok) {
+                        if (!quiet) { showKeyboardHint('已解锁'); }
+                    } else if (d && d.error === 'invalid-pin') {
+                        showKeyboardHint('PIN 格式不对（4–16 位数字）');
+                    } else {
+                        showKeyboardHint('解锁失败，PIN 是否正确？');
+                    }
+                })
+                .catch(() => { if (!quiet) { showKeyboardHint('解锁请求失败，检查连接'); } });
+        }
+
+        // 进入 / 首帧时的动作：记住了 PIN 就自动盲解锁，否则只唤醒（谷歌2 这类
+        // 锁屏可见的机型，唤醒后自己在画面里输密码即可）。
+        function wakeOrUnlock(quiet) {
+            if (loadRememberPin() && loadDevicePin()) {
+                sendUnlock(loadDevicePin(), quiet);
+            } else {
+                fetch('/api/wake?ts=' + Date.now(), { cache: 'no-store' }).catch(() => {});
+            }
         }
 
         function loadQualityPreset() {
@@ -2601,7 +2711,10 @@
             const fabTools = document.getElementById('fab-tools');
             const appRoot = document.querySelector('.app');
             if (fabTools && appRoot) {
-                const FAB_POS_KEY = 'fabToolsPos';
+                // 换了默认位置（右侧边缘居中），把旧的拖动记录一次性作废：
+                // 换 key 即可让老浏览器回到新默认，之后拖动照常记住。
+                const FAB_POS_KEY = 'fabToolsPos2';
+                try { localStorage.removeItem('fabToolsPos'); } catch (e) {}
                 const fabPanel = document.querySelector('.topbar');
                 const FAB_MARGIN = 8;
 
@@ -3073,6 +3186,12 @@
             return { radius, bezel };
         }
 
+        // 设备识别：/api/whoami 给 <html> 打型号标记（data-device-model）。
+        // OPPO(PLS120) 专属项（安全区避让 iPhone 灵动岛、清晰度档位）据此生效，谷歌2 不受影响。
+        const TARGET_MODEL = 'PLS120';
+        let deviceModel = '';
+        let isTargetDevice = false;
+
         function layoutDeviceFrame() {
             const wrapper = videoWrapper;
             const frame = deviceFrame;
@@ -3101,6 +3220,8 @@
                 frameW = Math.round(frameH * ar);
             }
 
+            // 不做任何放大/裁剪：等比完整显示。OPPO 比 iPhone 窄，左右会留一点黑边，
+            // 换来的是整块画面完整——顶部电量栏和底部手势栏都在。
             const chrome = frameChromeMetrics(frameW);
             frame.style.setProperty('--device-frame-radius', chrome.radius + 'px');
             frame.style.setProperty('--device-bezel', chrome.bezel + 'px');
@@ -3143,6 +3264,48 @@
         }
         bindLayoutObserver();
         window.addEventListener('resize', () => layoutDeviceFrame());
+
+        // 认出本页服务的是哪台手机：给 <html> 打型号标记，OPPO(PLS120) 专属版面据此生效。
+        // 谷歌2 或取不到时 isTargetDevice 保持 false，页面维持原始等比贴边，互不影响。
+        fetch('/api/whoami').then((r) => (r.ok ? r.json() : null)).then((d) => {
+            if (!d) { return; }
+            deviceModel = d.model || '';
+            if (deviceModel) { document.documentElement.dataset.deviceModel = deviceModel; }
+            if (d.serial) { document.documentElement.dataset.deviceSerial = d.serial; }
+            isTargetDevice = (deviceModel === TARGET_MODEL);
+            if (isTargetDevice) {
+                applyOppoQuality();
+            }
+            layoutDeviceFrame();   // 拿到设备后按机型重排一次
+        }).catch(() => {});
+
+        // OPPO(1080×2372) 专属清晰度：原有档位是按谷歌2(1080×1920)定的，
+        // max_size 限制的是长边——1920 会把 OPPO 缩到 874×1920，不是真原画。
+        // 就地改属性（不换对象）：qualityConfig 持有同一引用，改完即时生效。
+        function applyOppoQuality() {
+            const clear = QUALITY_PRESETS.clear;
+            if (clear) {
+                clear.video_bit_rate = '8000000';
+                clear.max_size = '2372';   // OPPO 原生长边，不缩水
+            }
+            const hd = QUALITY_PRESETS.hd;
+            if (hd) {
+                hd.video_bit_rate = '4000000';
+                hd.max_size = '1600';
+            }
+            // 均衡上挪到 1080（原来的 800 让给流畅档），码率按像素量等比提到 3Mbps。
+            const balanced = QUALITY_PRESETS.balanced;
+            if (balanced) {
+                balanced.video_bit_rate = '3000000';
+                balanced.max_size = '1080';
+            }
+            // 流畅（内部名 smooth，界面标签“清晰”）接手原均衡的 800 长边；
+            // 码率仍保持 1.2Mbps —— 这档的定位就是省带宽。
+            const smooth = QUALITY_PRESETS.smooth;
+            if (smooth) {
+                smooth.max_size = '800';
+            }
+        }
 
         function initInput(width, height) {
             mediaWidth = width;
@@ -3557,6 +3720,32 @@
             };
             bindTapAction(rebootBtn, onReboot);
 
+            // 盲解锁：填入的 PIN 预置、记住开关、点“解锁”发送。
+            const pinInput = document.getElementById('unlock-pin');
+            const rememberBox = document.getElementById('unlock-remember');
+            if (pinInput && rememberBox) {
+                rememberBox.checked = loadRememberPin();
+                if (rememberBox.checked) {
+                    pinInput.value = loadDevicePin();
+                }
+                bindTapAction(document.getElementById('unlock-send'), () => {
+                    const pin = (pinInput.value || '').trim();
+                    if (!/^\d{4,16}$/.test(pin)) {
+                        showKeyboardHint('请输入 4–16 位数字 PIN');
+                        return;
+                    }
+                    if (rememberBox.checked) {
+                        saveDevicePin(pin);
+                        saveRememberPin(true);
+                    } else {
+                        saveDevicePin('');
+                        saveRememberPin(false);
+                    }
+                    sendUnlock(pin);
+                    hideDiagnostics();
+                });
+            }
+
             if (overlay) {
                 overlay.addEventListener('click', (e) => {
                     if (e.target === overlay) {
@@ -3587,7 +3776,7 @@
             // 服务端对“已唤醒且未锁屏”的手机会跳过，不会打断正在进行的操作。
             if (!wakeOnFirstFrameDone) {
                 wakeOnFirstFrameDone = true;
-                fetch('/api/wake?ts=' + Date.now(), { cache: 'no-store' }).catch(() => {});
+                wakeOrUnlock(true);  // 首帧兜底：静默，若已解锁则后端自动跳过
             }
         }
 
@@ -4260,8 +4449,8 @@
             }
             // 手机会按自己的设置自动息屏/锁屏，而 scrcpy 的触摸唤不醒休眠中的设备。
             // 所以进入时让服务端用 adb 唤醒；若在锁屏就直接调出 PIN 输入盘。
-            // 手机本来就醒着且没锁时服务端会跳过，不打扰正在进行的操作。
-            fetch('/api/wake?ts=' + Date.now(), { cache: 'no-store' }).catch(() => {});
+            // 记住了 PIN（锁屏黑屏机型）就直接盲解锁；否则只唤醒。
+            wakeOrUnlock(false);
             // 让手机端的输入法开关和本页记住的输入方式保持一致（换设备/重装后也对得上）。
             pushDeviceImeMode(inputMode === 'device');
             connectMedia();

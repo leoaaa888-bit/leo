@@ -17,7 +17,7 @@ from threading import Lock
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -27,12 +27,14 @@ from scrcpy import (
     trigger_device_screenshot,
     get_notification_state,
     wake_for_unlock,
+    unlock_device,
     set_device_ime_visible,
     reboot_device,
     check_adb,
     list_adb_devices,
     preclean_connection,
     resolve_device_serial,
+    get_device_model,
     set_adb_path,
     set_device_serial,
     set_local_port,
@@ -434,6 +436,15 @@ def index():
     )
 
 
+@app.get("/api/whoami")
+def api_whoami():
+    """本实例绑定的设备（serial + model）。页面据此给 <html> 打标，做设备专属版面——
+    例如 OPPO(PLS120) 的 iPhone 填满/安全区只在 OPPO 页面生效，谷歌2 页面不受影响。"""
+    serial = resolve_device_serial(None)
+    model = get_device_model(serial)
+    return JSONResponse({"serial": serial, "model": model})
+
+
 @app.get("/api/devices")
 def api_devices():
     devices, raw = list_adb_devices()
@@ -452,6 +463,21 @@ def api_screenshot(device_serial: Optional[str] = Query(None)):
     if ok:
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "screenshot failed"}, status_code=500)
+
+
+@app.post("/api/unlock")
+async def api_unlock(
+    pin: str = Body(..., embed=True),
+    device_serial: Optional[str] = Body(None, embed=True),
+):
+    """盲解锁：把 PIN 发进锁屏（用于锁屏黑屏的机型）。PIN 走请求体，不进 URL 日志。"""
+    serial = device_serial
+    if serial is None:
+        with session_lock:
+            if active_session is not None:
+                serial = active_session.device_serial
+    state = await asyncio.to_thread(unlock_device, pin, serial)
+    return JSONResponse(state)
 
 
 @app.post("/api/reboot")

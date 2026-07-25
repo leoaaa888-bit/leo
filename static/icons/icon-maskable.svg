@@ -1,23 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Web-scrcpy">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Web">
   <defs>
-    <linearGradient id="g" x1="96" y1="64" x2="416" y2="448" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#4AE892"/>
-      <stop offset="1" stop-color="#2BB86A"/>
+    <linearGradient id="sphere" x1="0" y1="132" x2="0" y2="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4DA2FF"/>
+      <stop offset="1" stop-color="#1B6FE0"/>
     </linearGradient>
-    <linearGradient id="screen" x1="176" y1="120" x2="336" y2="392" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#1A2430"/>
-      <stop offset="1" stop-color="#0B1016"/>
-    </linearGradient>
+    <clipPath id="ball">
+      <circle cx="256" cy="256" r="124"/>
+    </clipPath>
   </defs>
-  <!-- Full-bleed safe for Android maskable (important content in center 80%) -->
-  <rect width="512" height="512" fill="#0E1014"/>
-  <circle cx="256" cy="256" r="196" fill="#3DDC84" opacity="0.1"/>
-  <rect x="176" y="96" width="160" height="320" rx="34" fill="url(#g)"/>
-  <rect x="192" y="120" width="128" height="256" rx="16" fill="url(#screen)"/>
-  <rect x="230" y="136" width="52" height="12" rx="6" fill="#0E1014" opacity="0.85"/>
-  <rect x="218" y="214" width="12" height="34" rx="3" fill="#3DDC84"/>
-  <rect x="240" y="200" width="12" height="48" rx="3" fill="#3DDC84"/>
-  <rect x="262" y="186" width="12" height="62" rx="3" fill="#3DDC84"/>
-  <rect x="284" y="172" width="12" height="76" rx="3" fill="#6EF0A4"/>
-  <rect x="230" y="392" width="52" height="8" rx="4" fill="#07140C" opacity="0.45"/>
+  <!-- 仿 iPhone 🌐；图形收在中心 80% 安全区内，球体以外透明 -->
+  <circle cx="256" cy="256" r="124" fill="url(#sphere)"/>
+  <g clip-path="url(#ball)" fill="none" stroke="#FFFFFF" stroke-width="15" stroke-linecap="round">
+    <ellipse cx="256" cy="256" rx="58" ry="124"/>
+    <line x1="132" y1="256" x2="380" y2="256"/>
+    <line x1="149" y1="194" x2="363" y2="194"/>
+    <line x1="149" y1="318" x2="363" y2="318"/>
+  </g>
+  <circle cx="256" cy="256" r="124" fill="none" stroke="#FFFFFF" stroke-width="15"/>
 </svg>
