@@ -2210,6 +2210,58 @@
             setTimeout(() => { try { input.focus(); } catch (e) {} }, 60);
         }
 
+        // —— 悬浮球的活动范围：投屏画面之内 ——
+        // 两个球原先按视口夹紧，于是能被拖到画面两侧的黑边里。这里改成按画面
+        // （device-frame）的实际矩形夹紧，黑边就进不去了。
+        // 画面还没出来（尺寸为 0）时回退到视口，避免把球夹到一个 0×0 的区域里。
+        function fabBounds(size, margin) {
+            const el = document.getElementById('device-frame');
+            const r = el ? el.getBoundingClientRect() : null;
+            const useFrame = r && r.width > size * 2 && r.height > size * 2;
+            const left = useFrame ? r.left : 0;
+            const top = useFrame ? r.top : 0;
+            const right = useFrame ? r.right : window.innerWidth;
+            const bottom = useFrame ? r.bottom : window.innerHeight;
+            return {
+                minX: left + margin,
+                maxX: right - size - margin,
+                minY: top + margin,
+                maxY: bottom - size - margin,
+            };
+        }
+
+        // 把越界的球拉回画面内（画面尺寸变化后调用）。
+        // 只在“确实越界”时才写内联坐标：没越界的球继续用 CSS 默认位置，
+        // 这样底部居中/贴右这些规则不会被无谓地固化成像素值。
+        function clampFabIntoScreen(el, margin) {
+            if (!el) { return; }
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) { return; }
+            const b = fabBounds(r.width, margin);
+            if (b.maxX < b.minX || b.maxY < b.minY) { return; }
+            const x = Math.min(Math.max(r.left, b.minX), b.maxX);
+            const y = Math.min(Math.max(r.top, b.minY), b.maxY);
+            if (Math.abs(x - r.left) > 0.5 || Math.abs(y - r.top) > 0.5) {
+                el.style.left = x + 'px';
+                el.style.top = y + 'px';
+                el.style.right = 'auto';
+                el.style.bottom = 'auto';
+            }
+        }
+
+        // —— 全页禁止双指缩放 ——
+        // Safari 会“按站点记住页面缩放”。一旦不小心把页面放大过，之后每次进来都是
+        // 放大状态：投屏画面看着被放大、伪装页只剩一片白、悬浮球位置也全乱。
+        // 之前只在伪装页拦了捏合，主页面没拦，所以还是会被设置上。
+        // 注意：已经被记住的缩放只能由用户在 Safari 菜单里缩回去（浏览器设置，
+        // 网页无权重置）；这里做的是防止它再次被设置。
+        // 只拦捏合（gesture 事件），不去动 touchend：
+        // 伪装页的三连击、超人球的双击都是快速连点，在 touchend 上 preventDefault
+        // 会把它们一起弄坏。双击缩放本来就已被 body 的 touch-action:manipulation 挡住。
+        ['gesturestart', 'gesturechange', 'gestureend'].forEach((evt) => {
+            document.addEventListener(evt, (e) => { e.preventDefault(); }, { passive: false });
+        });
+
         // —— 导航悬浮球（仅 OPPO，CSS 里按机型显示）——
         // 手机自己的手势栏被裁掉了，用它代替：单击=返回，长按=主页，双击=最近任务。
         // 球可拖动；拖动过程不触发任何按键。
@@ -2218,8 +2270,13 @@
             if (!fab) { return; }
 
             const KEY_BACK = 4, KEY_HOME = 3, KEY_RECENTS = 187;
-            // 换了默认位置（底部居中），旧的拖动记录一次性作废
-            const POS_KEY = 'fabNavPos3';
+            // 不跨刷新记忆位置：每次进入都回到 CSS 默认的底部居中。
+            // 之前按“占窗口的比例”存坐标，但保存与恢复时的 innerWidth/innerHeight
+            // 常常不一致（iOS Safari 地址栏伸缩、球尚未显示时 rect 为 0），
+            // 恢复出来的位置会漂到边缘、被切掉，甚至把页面撑出横向溢出。
+            // 拖动仍然有效，只是仅限本次会话。
+            const OLD_POS_KEYS = ['fabNavPos', 'fabNavPos2', 'fabNavPos3'];
+            try { OLD_POS_KEYS.forEach((k) => localStorage.removeItem(k)); } catch (e) {}
             const MARGIN = 8;
             const LONG_PRESS_MS = 480;
             const DOUBLE_TAP_MS = 280;   // 单击要等这么久才发，用来分辨双击
@@ -2231,31 +2288,16 @@
 
             function place(left, top) {
                 const w = fab.offsetWidth || 48, h = fab.offsetHeight || 48;
-                const x = Math.min(Math.max(left, MARGIN), window.innerWidth - w - MARGIN);
-                const y = Math.min(Math.max(top, MARGIN), window.innerHeight - h - MARGIN);
+                // 夹在投屏画面内，拖不进两侧黑边
+                const b = fabBounds(Math.max(w, h), MARGIN);
+                if (b.maxX < b.minX || b.maxY < b.minY) { return; }
+                const x = Math.min(Math.max(left, b.minX), b.maxX);
+                const y = Math.min(Math.max(top, b.minY), b.maxY);
                 fab.style.left = x + 'px';
                 fab.style.top = y + 'px';
                 fab.style.right = 'auto';
                 fab.style.bottom = 'auto';
             }
-            function savePos() {
-                const r = fab.getBoundingClientRect();
-                try {
-                    localStorage.setItem(POS_KEY, JSON.stringify({
-                        xr: r.left / window.innerWidth,
-                        yr: r.top / window.innerHeight,
-                    }));
-                } catch (e) {}
-            }
-            function loadPos() {
-                try {
-                    const s = JSON.parse(localStorage.getItem(POS_KEY) || 'null');
-                    if (s && isFinite(s.xr) && isFinite(s.yr)) {
-                        place(s.xr * window.innerWidth, s.yr * window.innerHeight);
-                    }
-                } catch (e) {}
-            }
-
             function flash() {
                 fab.classList.add('is-fired');
                 setTimeout(() => fab.classList.remove('is-fired'), 180);
@@ -2313,7 +2355,7 @@
                 try { fab.releasePointerCapture(dragId); } catch (err) {}
                 const wasDragged = dragged, wasLong = longFired;
                 reset();
-                if (wasDragged) { savePos(); return; }
+                if (wasDragged) { return; }   // 拖动只在本次会话内有效，不写入存储
                 if (wasLong) { return; }   // 长按已经发过主页了
 
                 const now = Date.now();
@@ -2335,10 +2377,16 @@
                 reset();
             });
 
-            loadPos();
             window.addEventListener('resize', () => {
+                // 没拖动过就一直用 CSS 默认位置（底部居中），别插手：
+                // iOS Safari 地址栏伸缩会频繁触发 resize，一旦这里改写成
+                // 内联 left/top，球就脱离了居中规则，容易漂到边上甚至被切掉。
+                if (!fab.style.left) { return; }
                 const r = fab.getBoundingClientRect();
-                if (fab.style.left) { place(r.left, r.top); }   // 旋转/改窗口后夹回屏内
+                // 球在 /api/whoami 返回前是 display:none，此时 rect 全是 0，
+                // 把这个 0 当坐标会被 place() 夹到 (8,8)，也就是钉死在左上角。
+                if (r.width === 0 || r.height === 0) { return; }
+                place(r.left, r.top);   // 拖动过的球：旋转/改窗口后夹回屏内
             });
         })();
 
@@ -3134,8 +3182,11 @@
                 function applyFabPos(left, top) {
                     const w = fabTools.offsetWidth || 48;
                     const h = fabTools.offsetHeight || 48;
-                    const x = Math.min(Math.max(left, FAB_MARGIN), window.innerWidth - w - FAB_MARGIN);
-                    const y = Math.min(Math.max(top, FAB_MARGIN), window.innerHeight - h - FAB_MARGIN);
+                    // 夹在投屏画面内，拖不进两侧黑边
+                    const b = fabBounds(Math.max(w, h), FAB_MARGIN);
+                    if (b.maxX < b.minX || b.maxY < b.minY) { return; }
+                    const x = Math.min(Math.max(left, b.minX), b.maxX);
+                    const y = Math.min(Math.max(top, b.minY), b.maxY);
                     fabTools.style.left = x + 'px';
                     fabTools.style.top = y + 'px';
                     fabTools.style.right = 'auto';
@@ -3651,6 +3702,9 @@
                     fallbackVideo.style.width = '100%';
                     fallbackVideo.style.height = '100%';
                 }
+                // 画面尺寸定下来后，把落在黑边里的悬浮球拉回画面内
+                clampFabIntoScreen(document.getElementById('fab-tools'), 8);
+                clampFabIntoScreen(document.getElementById('fab-nav'), 8);
             });
         }
 
@@ -4979,11 +5033,6 @@
             // events, not pointerup — preventDefault() there doesn't stop it.
             // Cancel it directly on touchend so 3 quick taps never zoom the page.
             offlineHotspot.addEventListener('touchend', (e) => { e.preventDefault(); }, { passive: false });
-            // 双指捏合缩放：CSS 的 touch-action:none 已经能挡住，这里再兜一层
-            // iOS Safari 私有的 gesture 事件，老版本 Safari 只认这个。
-            ['gesturestart', 'gesturechange', 'gestureend'].forEach((evt) => {
-                offlineGate.addEventListener(evt, (e) => { e.preventDefault(); }, { passive: false });
-            });
         } else {
             // Gate markup missing, or a quality/audio switch — skip straight in.
             // 若这是"切画质整页重载"回来的：贴回重载前定格的那一帧，并进入安静切换
