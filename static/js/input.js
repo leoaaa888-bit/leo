@@ -420,8 +420,27 @@ class ScrcpyInput {
         this.activateKeyboardInput();
     }
 
+    static isEditableElement(el) {
+        if (!el) {
+            return false;
+        }
+        if (el.isContentEditable) {
+            return true;
+        }
+        const tag = el.tagName;
+        return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    }
+
     activateKeyboardInput() {
         if (!this.keyboardInputElement || !this.keyboardMappingEnabled || this.isTouchPrimary) {
+            return;
+        }
+        // 页面自己的输入框（锁屏 PIN 框、诊断面板等）拿到焦点时不要抢走。
+        // 否则电脑端在这些框里一按键，document 上的捕获监听就把焦点夺回隐藏输入框，
+        // 字全被转发给手机、框里一个都打不进去。
+        const active = document.activeElement;
+        if (active && active !== this.keyboardInputElement
+                && ScrcpyInput.isEditableElement(active)) {
             return;
         }
 

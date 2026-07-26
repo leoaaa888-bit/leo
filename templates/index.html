@@ -506,6 +506,7 @@
             background: #000;
         }
 
+
         .screen-loader {
             position: absolute;
             inset: 0;
@@ -811,6 +812,11 @@
             display: none;
         }
 
+        /* 导航悬浮球：默认隐藏，只有 OPPO 的手机版才显示（见下方 media query） */
+        .fab-nav {
+            display: none;
+        }
+
         /* —— mobile：全屏画面 + 悬浮工具面板 —— */
         @media (max-width: 768px) {
             .app {
@@ -986,6 +992,58 @@
                 width: 20px;
                 height: 20px;
                 pointer-events: none;
+            }
+
+            /* 导航悬浮球：只有 OPPO 显示。默认停在底部正中——
+               球宽 48px，所以左偏移取 calc(50% - 24px) 才是真正居中；
+               底部再让开 iPhone 的 home 指示条(safe-area)，免得被横条压住。 */
+            :root[data-device-model="PLS120"] .fab-nav {
+                display: grid;
+                place-items: center;
+                position: fixed;
+                left: calc(50% - 24px);
+                bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+                z-index: 31;
+                width: 48px;
+                height: 48px;
+                padding: 0;
+                appearance: none;
+                /* 只留徽标本身：无圆形底色、无边框、无投影 */
+                border: none;
+                background: none;
+                box-shadow: none;
+                cursor: pointer;
+                -webkit-tap-highlight-color: transparent;
+                -webkit-user-select: none;
+                user-select: none;
+                touch-action: none;   /* 拖动时 pointermove 要压过浏览器手势 */
+            }
+
+            /* 没有底色托着，徽标画大一点才好按（触控区仍是 48×48） */
+            .fab-nav-img,
+            .fab-nav svg {
+                width: 42px;
+                height: 42px;
+                pointer-events: none;
+            }
+
+            .fab-nav-img {
+                object-fit: contain;
+                display: block;
+            }
+
+            /* 有图片时藏起手绘版；图片加载失败会被 onerror 移除，
+               那时 SVG 变成第一个子元素，自动显示出来。 */
+            .fab-nav-svg { display: none; }
+            .fab-nav-svg:first-child { display: block; }
+
+            /* 触发反馈：按下缩一下；命中时用徽标自身的黄色辉光，不用黑影 */
+            .fab-nav.is-pressed {
+                transform: scale(0.92);
+            }
+
+            .fab-nav.is-fired svg {
+                filter: drop-shadow(0 0 6px rgba(247, 201, 72, 0.95));
             }
 
             .app.tools-open .fab-tools {
@@ -1672,7 +1730,7 @@
             color: var(--text);
         }
     </style>
-    <script src="/static/js/input.js?v=28"></script>
+    <script src="/static/js/input.js?v=29"></script>
     <script src="/static/js/exp-golomb.js?v=21"></script>
     <script src="/static/js/h264-sps-parser.js?v=22"></script>
     <script src="/static/js/video_parser.js?v=23"></script>
@@ -1838,6 +1896,32 @@
         <button type="button" class="fab-tools" id="fab-tools" aria-label="工具面板" title="工具">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>
+            </svg>
+        </button>
+
+        <!-- 导航悬浮球（仅 OPPO）：手机自己的手势栏已被裁掉、App 导航栏也隐藏了，
+             用它代替。单击=返回，长按=主页，双击=最近任务；可拖动。 -->
+        <button type="button" class="fab-nav" id="fab-nav" aria-label="导航：单击返回，长按主页，双击任务" title="单击返回 · 长按主页 · 双击任务">
+            <!-- 优先用真实徽标图片（放到 static/icons/superman.png）；
+                 文件不存在时自动回退到下面手绘的 SVG，不会显示成破图。 -->
+            <img class="fab-nav-img" src="/static/icons/superman.png?v=1" alt="" aria-hidden="true"
+                 onerror="this.remove();">
+            <!-- 兜底：手绘近似版（棱角六边形 + 黑描边 + 带黑边的黄 S） -->
+            <svg class="fab-nav-svg" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M1.2 7.3 L4.8 3.6 L19.2 3.6 L22.8 7.3 L12 20.6 Z"
+                      fill="#d8161f" stroke="#000" stroke-width="0.8" stroke-linejoin="round"/>
+                <path d="M17.4 7.9 C15.4 6.6 9.9 6.5 8.4 8.2
+                         C7.1 9.7 8.3 11.2 10.3 11.7 L13.6 12.5
+                         C15.8 13.1 16.4 14.8 14.9 16.2
+                         C13.2 17.7 8.7 17.5 6.9 15.9"
+                      fill="none" stroke="#000" stroke-width="3.4"
+                      stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M17.4 7.9 C15.4 6.6 9.9 6.5 8.4 8.2
+                         C7.1 9.7 8.3 11.2 10.3 11.7 L13.6 12.5
+                         C15.8 13.1 16.4 14.8 14.9 16.2
+                         C13.2 17.7 8.7 17.5 6.9 15.9"
+                      fill="none" stroke="#fde021" stroke-width="2.8"
+                      stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
         </button>
     </div>
@@ -2125,6 +2209,138 @@
             // iOS 上要等弹框真的显示出来再聚焦，否则键盘不弹
             setTimeout(() => { try { input.focus(); } catch (e) {} }, 60);
         }
+
+        // —— 导航悬浮球（仅 OPPO，CSS 里按机型显示）——
+        // 手机自己的手势栏被裁掉了，用它代替：单击=返回，长按=主页，双击=最近任务。
+        // 球可拖动；拖动过程不触发任何按键。
+        (function initFabNav() {
+            const fab = document.getElementById('fab-nav');
+            if (!fab) { return; }
+
+            const KEY_BACK = 4, KEY_HOME = 3, KEY_RECENTS = 187;
+            // 换了默认位置（底部居中），旧的拖动记录一次性作废
+            const POS_KEY = 'fabNavPos3';
+            const MARGIN = 8;
+            const LONG_PRESS_MS = 480;
+            const DOUBLE_TAP_MS = 280;   // 单击要等这么久才发，用来分辨双击
+            const DRAG_SLOP = 6;         // 超过这个位移就算拖动，不再算点击
+
+            let dragId = null, startX = 0, startY = 0, origLeft = 0, origTop = 0;
+            let dragged = false, longFired = false, longTimer = null;
+            let pendingTap = null, lastTapAt = 0;
+
+            function place(left, top) {
+                const w = fab.offsetWidth || 48, h = fab.offsetHeight || 48;
+                const x = Math.min(Math.max(left, MARGIN), window.innerWidth - w - MARGIN);
+                const y = Math.min(Math.max(top, MARGIN), window.innerHeight - h - MARGIN);
+                fab.style.left = x + 'px';
+                fab.style.top = y + 'px';
+                fab.style.right = 'auto';
+                fab.style.bottom = 'auto';
+            }
+            function savePos() {
+                const r = fab.getBoundingClientRect();
+                try {
+                    localStorage.setItem(POS_KEY, JSON.stringify({
+                        xr: r.left / window.innerWidth,
+                        yr: r.top / window.innerHeight,
+                    }));
+                } catch (e) {}
+            }
+            function loadPos() {
+                try {
+                    const s = JSON.parse(localStorage.getItem(POS_KEY) || 'null');
+                    if (s && isFinite(s.xr) && isFinite(s.yr)) {
+                        place(s.xr * window.innerWidth, s.yr * window.innerHeight);
+                    }
+                } catch (e) {}
+            }
+
+            function flash() {
+                fab.classList.add('is-fired');
+                setTimeout(() => fab.classList.remove('is-fired'), 180);
+            }
+            function fire(keycode, hint) {
+                requestAudioUnlock();
+                sendKeyPress(keycode);
+                flash();
+                if (hint) { showKeyboardHint(hint); }
+            }
+            function clearPending() {
+                if (longTimer) { clearTimeout(longTimer); longTimer = null; }
+            }
+            function reset() {
+                clearPending();
+                dragId = null;
+                dragged = false;
+                longFired = false;
+                fab.classList.remove('is-pressed');
+            }
+
+            fab.addEventListener('pointerdown', (e) => {
+                e.preventDefault();
+                if (dragId !== null) { return; }
+                dragId = e.pointerId;
+                try { fab.setPointerCapture(dragId); } catch (err) {}
+                const r = fab.getBoundingClientRect();
+                startX = e.clientX; startY = e.clientY;
+                origLeft = r.left; origTop = r.top;
+                dragged = false; longFired = false;
+                fab.classList.add('is-pressed');
+                clearPending();
+                longTimer = setTimeout(() => {
+                    longTimer = null;
+                    if (dragged) { return; }
+                    longFired = true;
+                    // 长按判定成立：取消待发的单击，改发主页
+                    if (pendingTap) { clearTimeout(pendingTap); pendingTap = null; }
+                    fire(KEY_HOME, '主页');
+                }, LONG_PRESS_MS);
+            });
+
+            fab.addEventListener('pointermove', (e) => {
+                if (dragId !== e.pointerId) { return; }
+                const dx = e.clientX - startX, dy = e.clientY - startY;
+                if (!dragged && Math.hypot(dx, dy) > DRAG_SLOP) {
+                    dragged = true;
+                    clearPending();   // 开始拖动就不再算长按
+                }
+                if (dragged) { place(origLeft + dx, origTop + dy); }
+            });
+
+            function onUp(e) {
+                if (dragId !== e.pointerId) { return; }
+                try { fab.releasePointerCapture(dragId); } catch (err) {}
+                const wasDragged = dragged, wasLong = longFired;
+                reset();
+                if (wasDragged) { savePos(); return; }
+                if (wasLong) { return; }   // 长按已经发过主页了
+
+                const now = Date.now();
+                if (pendingTap && now - lastTapAt < DOUBLE_TAP_MS) {
+                    clearTimeout(pendingTap);
+                    pendingTap = null;
+                    fire(KEY_RECENTS, '最近任务');
+                    return;
+                }
+                lastTapAt = now;
+                pendingTap = setTimeout(() => {
+                    pendingTap = null;
+                    fire(KEY_BACK, '');   // 返回最常用，不弹提示免得刷屏
+                }, DOUBLE_TAP_MS);
+            }
+            fab.addEventListener('pointerup', onUp);
+            fab.addEventListener('pointercancel', (e) => {
+                if (dragId !== e.pointerId) { return; }
+                reset();
+            });
+
+            loadPos();
+            window.addEventListener('resize', () => {
+                const r = fab.getBoundingClientRect();
+                if (fab.style.left) { place(r.left, r.top); }   // 旋转/改窗口后夹回屏内
+            });
+        })();
 
         function loadQualityPreset() {
             const saved = localStorage.getItem(QUALITY_STORAGE_KEY);
