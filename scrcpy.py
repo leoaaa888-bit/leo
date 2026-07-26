@@ -390,6 +390,33 @@ def wake_for_unlock(device_serial=None):
         return {"ok": False, "action": "wake-failed", "error": str(e), "locked": locked}
 
 
+def open_app_drawer(device_serial=None):
+    """
+    从屏幕底部中间上滑，拉出抽屉式桌面的应用列表。
+    抽屉式启动器（ColorOS 可切换）就是靠这个手势打开的；没有对应按键码，
+    只能注入滑动。起止点用屏幕比例算，换机型/换分辨率都不用改。
+    """
+    serial = resolve_device_serial(device_serial)
+    if not serial:
+        return {"ok": False, "error": "no-device"}
+    size = _get_screen_size(serial)
+    if not size:
+        return {"ok": False, "error": "no-screen-size"}
+    w, h = size
+    x = w // 2
+    y1 = int(h * 0.92)   # 贴近底部起手
+    y2 = int(h * 0.40)   # 上滑到屏幕中上部，行程足够触发抽屉
+    try:
+        _run(
+            adb_cmd("shell", f"input swipe {x} {y1} {x} {y2} 180", device_serial=serial),
+            capture_output=True, text=True, timeout=6,
+        )
+        return {"ok": True}
+    except Exception as e:
+        print(f"open drawer failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+
 def set_device_ime_visible(visible, device_serial=None):
     """
     切换手机自己的屏幕输入法是否弹出。

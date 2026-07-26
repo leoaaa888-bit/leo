@@ -1900,8 +1900,8 @@
         </button>
 
         <!-- 导航悬浮球（仅 OPPO）：手机自己的手势栏已被裁掉、App 导航栏也隐藏了，
-             用它代替。单击=返回，长按=主页，双击=最近任务；可拖动。 -->
-        <button type="button" class="fab-nav" id="fab-nav" aria-label="导航：单击返回，长按主页，双击任务" title="单击返回 · 长按主页 · 双击任务">
+             用它代替。单击=返回，长按=主页，双击=最近任务，三击=拉出应用抽屉；可拖动。 -->
+        <button type="button" class="fab-nav" id="fab-nav" aria-label="导航：单击返回，长按主页，双击任务，三击应用抽屉" title="单击返回 · 长按主页 · 双击任务 · 三击抽屉">
             <!-- 优先用真实徽标图片（放到 static/icons/superman.png）；
                  文件不存在时自动回退到下面手绘的 SVG，不会显示成破图。 -->
             <img class="fab-nav-img" src="/static/icons/superman.png?v=1" alt="" aria-hidden="true"
@@ -2263,7 +2263,8 @@
         });
 
         // —— 导航悬浮球（仅 OPPO，CSS 里按机型显示）——
-        // 手机自己的手势栏被裁掉了，用它代替：单击=返回，长按=主页，双击=最近任务。
+        // 手机自己的手势栏被裁掉了，用它代替：
+        // 单击=返回，长按=主页，双击=最近任务，三击=从底部上滑拉出应用抽屉。
         // 球可拖动；拖动过程不触发任何按键。
         (function initFabNav() {
             const fab = document.getElementById('fab-nav');
@@ -2279,12 +2280,14 @@
             try { OLD_POS_KEYS.forEach((k) => localStorage.removeItem(k)); } catch (e) {}
             const MARGIN = 8;
             const LONG_PRESS_MS = 480;
-            const DOUBLE_TAP_MS = 280;   // 单击要等这么久才发，用来分辨双击
+            // 连击窗口：停手超过这么久才判定点了几下。单击要等这一下才发出，
+            // 是分辨双击/三击的必要代价。
+            const MULTI_TAP_MS = 260;
             const DRAG_SLOP = 6;         // 超过这个位移就算拖动，不再算点击
 
             let dragId = null, startX = 0, startY = 0, origLeft = 0, origTop = 0;
             let dragged = false, longFired = false, longTimer = null;
-            let pendingTap = null, lastTapAt = 0;
+            let pendingTap = null, tapCount = 0;
 
             function place(left, top) {
                 const w = fab.offsetWidth || 48, h = fab.offsetHeight || 48;
@@ -2307,6 +2310,20 @@
                 sendKeyPress(keycode);
                 flash();
                 if (hint) { showKeyboardHint(hint); }
+            }
+            // 抽屉式桌面的应用列表靠“底部上滑”打开，没有对应按键码，
+            // 只能让服务端注入一次滑动。
+            function openDrawer() {
+                requestAudioUnlock();
+                flash();
+                showKeyboardHint('应用抽屉');
+                fetch('/api/drawer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: '{}',
+                }).then((r) => (r.ok ? r.json() : null)).then((d) => {
+                    if (!d || !d.ok) { showKeyboardHint('拉抽屉失败'); }
+                }).catch(() => showKeyboardHint('拉抽屉失败，检查连接'));
             }
             function clearPending() {
                 if (longTimer) { clearTimeout(longTimer); longTimer = null; }
@@ -2334,8 +2351,9 @@
                     longTimer = null;
                     if (dragged) { return; }
                     longFired = true;
-                    // 长按判定成立：取消待发的单击，改发主页
+                    // 长按判定成立：取消待发的连击判定，改发主页
                     if (pendingTap) { clearTimeout(pendingTap); pendingTap = null; }
+                    tapCount = 0;
                     fire(KEY_HOME, '主页');
                 }, LONG_PRESS_MS);
             });
@@ -2358,18 +2376,22 @@
                 if (wasDragged) { return; }   // 拖动只在本次会话内有效，不写入存储
                 if (wasLong) { return; }   // 长按已经发过主页了
 
-                const now = Date.now();
-                if (pendingTap && now - lastTapAt < DOUBLE_TAP_MS) {
-                    clearTimeout(pendingTap);
-                    pendingTap = null;
-                    fire(KEY_RECENTS, '最近任务');
-                    return;
-                }
-                lastTapAt = now;
+                // 数click次数：连击窗口内每多点一次就重置计时，停手后按总数决定动作。
+                // 1=返回  2=最近任务  3=从底部上滑拉抽屉
+                tapCount += 1;
+                if (pendingTap) { clearTimeout(pendingTap); }
                 pendingTap = setTimeout(() => {
                     pendingTap = null;
-                    fire(KEY_BACK, '');   // 返回最常用，不弹提示免得刷屏
-                }, DOUBLE_TAP_MS);
+                    const n = tapCount;
+                    tapCount = 0;
+                    if (n === 1) {
+                        fire(KEY_BACK, '');          // 返回最常用，不弹提示免得刷屏
+                    } else if (n === 2) {
+                        fire(KEY_RECENTS, '最近任务');
+                    } else {
+                        openDrawer();                 // 三击及以上
+                    }
+                }, MULTI_TAP_MS);
             }
             fab.addEventListener('pointerup', onUp);
             fab.addEventListener('pointercancel', (e) => {

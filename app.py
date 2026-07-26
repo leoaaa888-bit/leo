@@ -28,6 +28,7 @@ from scrcpy import (
     get_notification_state,
     wake_for_unlock,
     unlock_device,
+    open_app_drawer,
     set_device_ime_visible,
     reboot_device,
     check_adb,
@@ -443,6 +444,18 @@ def api_whoami():
     serial = resolve_device_serial(None)
     model = get_device_model(serial)
     return JSONResponse({"serial": serial, "model": model})
+
+
+@app.post("/api/drawer")
+async def api_drawer(device_serial: Optional[str] = Body(None, embed=True)):
+    """从底部上滑拉出抽屉式桌面的应用列表（没有对应按键码，只能注入滑动）。"""
+    serial = device_serial
+    if serial is None:
+        with session_lock:
+            if active_session is not None:
+                serial = active_session.device_serial
+    state = await asyncio.to_thread(open_app_drawer, serial)
+    return JSONResponse(state)
 
 
 @app.get("/api/devices")

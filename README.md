@@ -515,9 +515,33 @@ python app.py --device_serial <序列号>
 
 已修复：后台标签定时器被浏览器冻结、心跳暂停会被误判为断线。现在改为切回来先探测再决定，健康连接不会被重连打断。
 
-### FLAG_SECURE 黑屏
+### FLAG_SECURE 黑屏（某些 App / 锁屏投出来是纯黑）
 
-项目会尝试通过 ADB 执行绕过命令（`try_disable_flag_secure`），部分 ROM / 应用仍可能无法镜像。
+应用给窗口打上 Android 的 `FLAG_SECURE` 后，**系统就不再把该窗口的内容送往任何截屏或外部显示通道**，scrcpy 拿到的只能是纯黑。这是系统级的安全边界，不是本项目的 bug。
+
+常见会黑屏的场景：
+
+| 场景 | 说明 |
+| --- | --- |
+| **Telegram** | 启用「密码锁」且禁止截屏时，会给所有窗口加 `FLAG_SECURE` |
+| **银行 / 支付类 App** | 多数默认开启 |
+| **部分 ROM 的锁屏**（如 ColorOS） | 整个锁屏界面都是 secure 层，见下方「锁屏黑屏机型」 |
+
+怎么确认是不是它：
+
+```bash
+# 把目标 App 切到前台后执行，输出里出现 SECURE 就是它
+adb shell "dumpsys window windows | grep -A 20 'Window{.*<包名>' | grep -E 'Window\{|fl='"
+
+# 交叉验证：手机端截屏若也是纯黑，说明确系 FLAG_SECURE
+adb exec-out screencap -p > test.png
+```
+
+**解决办法**：
+
+- **在应用自己的设置里关掉**。例如 Telegram：设置 → 隐私和安全 → 密码锁 → 允许「截屏 / Screen Capture」。这是唯一可靠的办法。
+- 项目里的 `try_disable_flag_secure()` 会尝试系统级绕过（`screencapture_disabled`、`debug.screencap.secure_layers` 等），但**新版本 Android 已堵死这条路**（实测 ColorOS / Android 16 无效）。
+- **不 root 没有可靠的绕过方式**。其余 App 不受影响，只有 secure 窗口本身是黑的。
 
 ### 连接时手机熄屏（控制端仍可见）
 
