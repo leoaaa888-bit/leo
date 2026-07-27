@@ -1642,6 +1642,42 @@
             cursor: pointer;
         }
 
+        /* —— 粘贴到手机 —— */
+        .diag-paste {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 0 16px 14px;
+        }
+
+        .paste-text {
+            width: 100%;
+            appearance: none;
+            border: 1px solid var(--line-strong);
+            background: #0E1014;
+            color: var(--text);
+            font-size: 16px;   /* ≥16px 防 iOS 聚焦缩放 */
+            line-height: 1.4;
+            padding: 8px 12px;
+            border-radius: 8px;
+            outline: none;
+            font-family: inherit;
+            resize: vertical;
+        }
+
+        .paste-text:focus {
+            border-color: rgba(61, 220, 132, 0.55);
+        }
+
+        .paste-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .paste-actions .diag-btn {
+            flex: 1;
+        }
+
         .diag-text {
             flex: 1;
             width: 100%;
@@ -1973,6 +2009,20 @@
                        autocomplete="off" placeholder="手机 PIN（盲解锁）" aria-label="手机 PIN" />
                 <label class="unlock-remember"><input type="checkbox" id="unlock-remember" /> 记住</label>
                 <button type="button" id="unlock-send" class="diag-btn diag-copy">解锁</button>
+            </div>
+
+            <!-- 粘贴到手机：手机端（iPhone）没有本机键盘映射通路，靠这里把文字送过去。
+                 http+IP 不是安全上下文，navigator.clipboard 读不了，所以留一个输入框
+                 让用户手动粘贴；能读剪贴板时点“读剪贴板”自动填。 -->
+            <div class="diag-paste">
+                <textarea id="paste-text" class="paste-text" rows="2" autocomplete="off"
+                          autocorrect="off" autocapitalize="off" spellcheck="false"
+                          placeholder="粘贴要发到手机的文字…" aria-label="要发送到手机的文字"></textarea>
+                <div class="paste-actions">
+                    <button type="button" id="paste-read" class="diag-btn diag-copy">读剪贴板</button>
+                    <button type="button" id="paste-clear" class="diag-btn diag-copy">清除</button>
+                    <button type="button" id="paste-send" class="diag-btn diag-copy">发到手机</button>
+                </div>
             </div>
         </div>
     </div>
@@ -4231,6 +4281,56 @@
                         saveRememberPin(false);
                     }
                     sendUnlock(pin);
+                    hideDiagnostics();
+                });
+            }
+
+            // —— 粘贴到手机 ——
+            // 手机端没有本机键盘映射通路（keyboardEnabled 在移动端恒为 false），
+            // 这里直接调 input.sendText()：纯 ASCII 走 INJECT_TEXT，含中文走
+            // SET_CLIPBOARD + 粘贴键。它不受键盘开关影响。
+            const pasteBox = document.getElementById('paste-text');
+            if (pasteBox) {
+                bindTapAction(document.getElementById('paste-read'), () => {
+                    // http+IP 不是安全上下文，navigator.clipboard 多半不可用；
+                    // 读不到就提示手动粘贴，不假装成功。
+                    if (!navigator.clipboard || !navigator.clipboard.readText) {
+                        showKeyboardHint('此环境读不了剪贴板，请长按输入框手动粘贴');
+                        pasteBox.focus();
+                        return;
+                    }
+                    navigator.clipboard.readText().then((t) => {
+                        if (t) {
+                            pasteBox.value = t;
+                            showKeyboardHint('已读入剪贴板');
+                        } else {
+                            showKeyboardHint('剪贴板是空的');
+                        }
+                    }).catch(() => {
+                        showKeyboardHint('读剪贴板被拒绝，请长按输入框手动粘贴');
+                        pasteBox.focus();
+                    });
+                });
+
+                bindTapAction(document.getElementById('paste-clear'), () => {
+                    pasteBox.value = '';
+                    pasteBox.focus();
+                    showKeyboardHint('已清除');
+                });
+
+                bindTapAction(document.getElementById('paste-send'), () => {
+                    const text = pasteBox.value || '';
+                    if (!text.trim()) {
+                        showKeyboardHint('先粘贴要发送的文字');
+                        pasteBox.focus();
+                        return;
+                    }
+                    if (!input) {
+                        showKeyboardHint('画面未连接，无法发送');
+                        return;
+                    }
+                    input.sendText(text);
+                    showKeyboardHint('已发送到手机（需先点中手机上的输入框）');
                     hideDiagnostics();
                 });
             }
