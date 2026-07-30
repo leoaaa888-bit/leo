@@ -6,7 +6,6 @@ import shutil
 import os
 import re
 import time
-import xml.etree.ElementTree as ET
 
 # Suppress the console window every adb.exe subprocess would otherwise pop up
 # when the server runs windowless (pythonw). Windows-only flag; 0 elsewhere.
@@ -215,10 +214,7 @@ _NOTIFY_SHELL = (
 )
 
 # 轻量缓存：多端/多次轮询时避免频繁执行 dumpsys（约几百毫秒）。
-# 缓存键带上 packages——这个函数现在有两种调用方式（悬浮球跑马灯不过滤包名、
-# Telegram 提醒循环仍然只看 NOTIFY_TARGET_PACKAGES 那几个），键不区分的话，
-# 两边共用同一个 2.5s 缓存会互相读到对方过滤范围算出来的结果。
-_notify_cache = {"key": None, "state": None, "at": 0.0}
+_notify_cache = {"at": 0.0, "serial": None, "state": None}
 _notify_cache_lock = Lock()
 _NOTIFY_CACHE_TTL_S = 2.5
 
@@ -235,18 +231,9 @@ def _parse_foreground_package(line):
 def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
     """
     返回 {ok, alert, packages, foreground}：
-      - packages：当前有"真实消息通知"且不在前台的 App 列表
+      - packages：当前有“真实消息通知”且不在前台的目标 App 列表
       - alert：packages 是否非空（悬浮球是否应变红）
       - foreground：当前前台 App 包名
-
-    packages 参数：
-      - 传具体的包名集合（比如默认的 NOTIFY_TARGET_PACKAGES）→ 只认这几个 App。
-        Telegram 未读提醒循环用的就是这个默认值——那个功能本来就只该盯着
-        聊天类 App，不该被任何 App 的通知（广告、系统消息……）刷屏。
-      - 传 None → 不按包名过滤，任何 App 只要有条"真实消息通知"（下面 importance/
-        flags 那两道判断）就算，对应悬浮球跑马灯"不止微信/QQ/Soul，凡是图标会
-        显示通知角标的 App 都提醒"的要求——现在唯一还剩的判断标准就是"这条通知
-        是不是真会显示成角标"，不再额外要求"必须是这三个 App 之一"。
     """
     serial = resolve_device_serial(device_serial)
     empty = {"ok": True, "alert": False, "packages": [], "foreground": None,
@@ -254,11 +241,10 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
     if not serial:
         return {**empty, "ok": False}
 
-    cache_key = (serial, packages)
     now = time.time()
     with _notify_cache_lock:
         c = _notify_cache
-        if (c["state"] is not None and c["key"] == cache_key
+        if (c["state"] is not None and c["serial"] == serial
                 and now - c["at"] < _NOTIFY_CACHE_TTL_S):
             return c["state"]
 
@@ -270,7 +256,7 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
     except Exception as e:
         return {**empty, "ok": False, "error": str(e)}
 
-    target_set = set(packages) if packages is not None else None
+    target_set = set(packages)
     section = None
     foreground = None
     alerting = []
@@ -297,7 +283,7 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
                 awake = line == "true"   # deviceidle get screen：屏幕是否亮着
         elif section == "nt" and line.startswith("NotificationRecord("):
             m = re.search(r"pkg=(\S+)", line)
-            if not m or (target_set is not None and m.group(1) not in target_set):
+            if not m or m.group(1) not in target_set:
                 continue
             pkg = m.group(1)
             imp_m = re.search(r"importance=(-?\d+)", line)
@@ -324,7 +310,7 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
         "locked": locked,
     }
     with _notify_cache_lock:
-        _notify_cache.update(at=time.time(), key=cache_key, state=state)
+        _notify_cache.update(at=time.time(), serial=serial, state=state)
     return state
 
 
@@ -488,275 +474,64 @@ def reboot_device(device_serial=None):
         return {"ok": False, "error": str(e)}
 
 
-# —— Secure Input Engine：往一块因 FLAG_SECURE 而黑屏的数字密码界面发一个键 ——
-# 覆盖场景：手机锁屏、Secret Album、OPPO/微信/支付宝应用锁、银行 App PIN 等。
-# 这些界面分两种：系统标准 PIN 输入框（发 KeyEvent 就能进）、App 自绘的数字按钮
-# 键盘（KeyEvent 到不了，只认触摸点击）——两者外观都是黑屏数字键盘，肉眼分不出来，
-# 只能靠现场探测判断。
-#
-# 架构是“能力探测链”：_PROBES 是一串 _SecureInputProbe，按顺序问“这个探测器
-# 判断得出该怎么发这个键吗”，第一个给出明确答案（返回某个 Strategy）的说了算，
-# 判断不出来（返回 None）就交给下一个；都判断不出来，最后兜底用 KeyEvent
-# （优先保证已经在用的场景，比如锁屏，不因为探测不出来而被破坏）。
-# 以后遇到小米/vivo/荣耀/三星等新场景，只要现有探测器的信号识别不出来，
-# 加一个新 _SecureInputProbe 子类塞进 _PROBES 列表即可——不用改已有探测器，
-# 不用碰 Strategy，也不用碰调用方（send_key、/api/secure-key、前端 JS 完全
-# 不知道、也不需要知道具体走了哪条路径）。
-_SECURE_KEY_CODES = {str(d): 7 + d for d in range(10)}  # KEYCODE_0..9 = 7..16
-_SECURE_KEY_CODES["del"] = 67     # KEYCODE_DEL（与 input.js 里退格键一致）
-_SECURE_KEY_CODES["enter"] = 66   # KEYCODE_ENTER（与 input.js 里回车键一致）
-
-_TAP_DEL_LABELS = {"删除", "清除", "清空", "退格", "backspace", "clear", "del"}
-_TAP_ENTER_LABELS = {"确定", "完成", "确认", "提交", "ok", "done", "enter"}
-
-
-class _SecureInputStrategy:
-    name = "base"
-
-    def send(self, key, serial):
-        raise NotImplementedError
-
-
-class _KeyEventStrategy(_SecureInputStrategy):
-    """标准场景（含系统锁屏）：直接发 KeyEvent，就是原来一直在用、已经验证
-    工作正常的路径。"""
-    name = "keyevent"
-
-    def send(self, key, serial):
-        code = _SECURE_KEY_CODES.get(str(key))
-        if code is None:
-            return {"ok": False, "error": "invalid-key"}
-        r = _run(adb_cmd("shell", f"input keyevent {code}", device_serial=serial),
-                 capture_output=True, text=True, timeout=6)
-        if r.returncode != 0:
-            err = (r.stderr or r.stdout or "").strip()[:200]
-            return {"ok": False, "error": f"adb exit {r.returncode}: {err}" if err else f"adb exit {r.returncode}"}
-        return {"ok": True, "strategy": self.name}
-
-
-class _UITapStrategy(_SecureInputStrategy):
-    """自绘数字键盘场景（如 OPPO 私密相册的 ConfirmNumberPrivacy）：这类界面的
-    密码框只是个展示用的 View，数字键是一个个独立 Button，靠触摸点击回调追加
-    一位数字，不接 KeyEvent。目标按钮的坐标由探测阶段现场 dump 得到，绝不写死，
-    这里只管点。"""
-    name = "tap"
-
-    def __init__(self, node):
-        self._node = node
-
-    def send(self, key, serial):
-        cx, cy = _node_center(self._node)
-        if cx is None:
-            return {"ok": False, "error": "bad-bounds"}
-        r = _run(adb_cmd("shell", f"input tap {cx} {cy}", device_serial=serial),
-                 capture_output=True, text=True, timeout=6)
-        if r.returncode != 0:
-            err = (r.stderr or r.stdout or "").strip()[:200]
-            return {"ok": False, "error": f"adb exit {r.returncode}: {err}" if err else f"adb exit {r.returncode}"}
-        return {"ok": True, "strategy": self.name}
-
-
-class _NoOpStrategy(_SecureInputStrategy):
-    """已经确认是自绘键盘，但这一个键（目前只有 enter 会走到这）在界面上本来就
-    没有对应按钮——多半是“输满位数自动提交”的设计，不是探测失败，不该报错，
-    也不该硬点一个不存在的按钮。返回 ok:true 但带上 no-op 标记，调用方看得出
-    这一步本来就不需要动作，跟真正的失败区分开。"""
-    name = "noop"
-
-    def __init__(self, reason):
-        self._reason = reason
-
-    def send(self, key, serial):
-        return {"ok": True, "strategy": self.name, "reason": self._reason}
-
-
-class _ErrorStrategy(_SecureInputStrategy):
-    """已经能确定当前场景（比如认定是自绘键盘），但这一个键真的找不到对应目标
-    ——明确返回错误，不静默失败，也不假装能退回别的方式。"""
-    name = "error"
-
-    def __init__(self, error):
-        self._error = error
-
-    def send(self, key, serial):
-        return {"ok": False, "error": self._error}
-
-
-def _node_label(node):
-    return (node.get("content-desc") or node.get("text") or "").strip()
-
-
-def _node_center(node):
-    m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.get("bounds") or "")
-    if not m:
-        return None, None
-    x1, y1, x2, y2 = (int(v) for v in m.groups())
-    return (x1 + x2) // 2, (y1 + y2) // 2
-
-
-def _get_focused_window_type(serial):
-    """只读：取当前聚焦窗口的 Android 窗口类型（mAttrs 里的 ty=...）。
-    普通 App 的 Activity 窗口固定是 BASE_APPLICATION；系统自己的界面（锁屏所在
-    的 SystemUI 通知栏/Keyguard 一类窗口、状态栏、输入法等）用的是其他类型
-    （比如锁屏这里实测是 NOTIFICATION_SHADE）。这是 Android WindowManager 自带
-    的标准分类，不分厂商、不分 App——判断“是不是系统窗口”不需要知道也不需要
-    写死任何具体包名。取不到时返回 None，调用方按“判断不出来就当系统窗口处理”
-    （更保守，优先保证不误伤已经能用的场景，比如锁屏）。
-
-    分两次小查询，不整份拉 `dumpsys window windows`——实测这份输出几百到上千行，
-    偶发在 adb shell 管道上被截断，截断点又不固定，可能正好把要找的那段截掉；
-    第二次查询让设备端 grep 只回传目标窗口那几行，既避开截断也更快。"""
+def _device_locked(serial):
     try:
-        r1 = _run(adb_cmd("shell", "dumpsys window | grep mCurrentFocus", device_serial=serial),
-                  capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=6)
-        if r1.returncode != 0 or not r1.stdout:
-            return None
-        m = re.search(r"mCurrentFocus=Window\{(\S+)\s+u\d+\s+[^}]*\}", r1.stdout)
-        if not m:
-            return None
-        token = m.group(1)
-        grep_pattern = r"Window #[0-9]+ Window\{" + token + r" "
-        r2 = _run(adb_cmd("shell", f"dumpsys window windows | grep -A5 -E '{grep_pattern}'",
-                            device_serial=serial),
-                  capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=8)
-        if r2.returncode != 0 or not r2.stdout:
-            return None
-        block = re.search(r"ty=([A-Z_]+)", r2.stdout)
-        return block.group(1) if block else None
+        r = _run(
+            adb_cmd("shell", "dumpsys trust | grep -o 'deviceLocked=[01]' | head -1",
+                    device_serial=serial),
+            capture_output=True, text=True, timeout=5,
+        )
+        return "deviceLocked=1" in (r.stdout or "")
     except Exception:
         return None
 
 
-def _dump_ui_tree(serial):
-    """只读：uiautomator dump 当前界面控件树，用于判断这次该发 KeyEvent 还是点坐标。
-    坐标绝不写死——每次都现场 dump、现场解析、现场算中心点。
-    dump 失败（超时、系统窗口不给读等）一律返回 None，调用方按“探测不出来就
-    退回 KeyEvent”处理，不会因为探测本身失败反而破坏原本能用的场景。"""
-    try:
-        _run(adb_cmd("shell", "uiautomator dump /sdcard/_secure_input_dump.xml",
-                      device_serial=serial),
-             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=8)
-        # dump 出来的 XML 本身是 UTF-8（label 里常有中文，比如“输入隐私密码”），
-        # 这里必须显式指定编码——不指定的话 subprocess 会用 Windows 默认代码页
-        # （这台机器上是 GBK）去解码，中文内容一律解码崩溃，_dump_ui_tree 就会
-        # 一直命中下面的 except 返回 None，UITapStrategy 在中文界面上永远用不上。
-        r = _run(adb_cmd("shell", "cat /sdcard/_secure_input_dump.xml", device_serial=serial),
-                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=8)
-        if r.returncode != 0 or not r.stdout or "<hierarchy" not in r.stdout:
-            return None
-        return ET.fromstring(r.stdout)
-    except Exception:
-        return None
-
-
-def _scan_keypad_nodes(root):
-    """把控件树扫一遍，收集看起来像数字键的可点击节点，和 del/enter 同义词
-    对应的节点。不看是哪个 App、哪个厂商，只看控件本身的可点击性 + 单字符
-    数字标签这个结构特征。"""
-    digit_nodes = {}
-    action_nodes = []
-    for node in root.iter("node"):
-        if (node.get("clickable") or "").lower() != "true":
-            continue
-        cls = node.get("class") or ""
-        if not any(t in cls for t in ("Button", "ImageView", "TextView", "View")):
-            continue
-        label = _node_label(node)
-        if len(label) == 1 and label in "0123456789":
-            digit_nodes.setdefault(label, node)
-        elif label.lower() in _TAP_DEL_LABELS:
-            action_nodes.append(("del", node))
-        elif label.lower() in _TAP_ENTER_LABELS:
-            action_nodes.append(("enter", node))
-    return digit_nodes, action_nodes
-
-
-class _SecureInputProbe:
-    """能力探测器基类：判断当前这个键该怎么发。判断得出就返回一个具体的
-    _SecureInputStrategy（包括“确认没这个按钮，报错”或“确认不用发，no-op”
-    这类明确结论也算判断得出）；判断不出来（这个探测器的信号不适用于当前
-    界面）就返回 None，交给探测链里的下一个探测器。"""
-
-    def probe(self, key, serial):
-        raise NotImplementedError
-
-
-class _SystemWindowKeyEventProbe(_SecureInputProbe):
-    """能力信号：聚焦窗口不是普通 App 的 BASE_APPLICATION —— 说明这是系统自己
-    的界面（锁屏所在的 SystemUI 一类窗口），Android 对这类窗口有特殊的按键
-    转发机制，KeyEvent 可用。只看 Android 自带的窗口类型，不看包名/厂商，
-    任何 OEM 的锁屏实现都适用。"""
-
-    def probe(self, key, serial):
-        win_type = _get_focused_window_type(serial)
-        if win_type is not None and win_type != "BASE_APPLICATION":
-            return _KeyEventStrategy()
-        return None  # 普通 App 窗口，或窗口类型查不到——交给下一个探测器
-
-
-class _CustomKeypadTapProbe(_SecureInputProbe):
-    """能力信号：dump 出的控件树里能凑齐一整套数字按钮（≥3 个不同数字，避免
-    被页面上一两个偶然带数字文案的无关控件误判）——说明这是 App 自绘键盘，
-    KeyEvent 到不了，只能点击。一旦认定是自绘键盘，之后不管这个键有没有找到
-    对应按钮都必须给出明确结论（Tap / no-op / 报错），不再交给下一个探测器
-    ——“探测不出来”和“探测出来了但这个键没有按钮”是两回事，不能混为一谈。"""
-
-    def probe(self, key, serial):
-        root = _dump_ui_tree(serial)
-        if root is None:
-            return None  # dump 不出来，没法判断，交给下一个/兜底
-
-        digit_nodes, action_nodes = _scan_keypad_nodes(root)
-        if len(digit_nodes) < 3:
-            return None  # 没看到像键盘的结构特征，这个探测器不适用
-
-        if key in digit_nodes:
-            return _UITapStrategy(digit_nodes[key])
-        for action_key, node in action_nodes:
-            if action_key == key:
-                return _UITapStrategy(node)
-        if key == "enter":
-            # 自绘键盘里没有确定/回车按钮——按“输满位数自动提交”处理，
-            # 不当成失败，也不用再尝试点一个不存在的按钮。
-            return _NoOpStrategy("auto-submit keypad, no enter button")
-        return _ErrorStrategy(f"tap-target-not-found:{key}")
-
-
-# 探测链：按顺序尝试，第一个给出明确结论的说了算。以后新增机型/场景的判断
-# 方式，只需要在这里加一个新的 _SecureInputProbe 子类实例，不用改其它探测器。
-_PROBES = [_SystemWindowKeyEventProbe(), _CustomKeypadTapProbe()]
-
-
-def _detect_secure_input_strategy(key, serial):
-    """依次问探测链里的每个探测器，返回第一个给出的明确结论。全部探测器都
-    判断不出来时，兜底用 KeyEvent——优先保证已经在用的场景（比如锁屏）
-    不会因为探测不出来而被破坏。"""
-    for probe in _PROBES:
-        strategy = probe.probe(key, serial)
-        if strategy is not None:
-            return strategy
-    return _KeyEventStrategy()
-
-
-def send_key(key, device_serial=None):
-    """Secure Input Engine 的统一入口：数字 0-9 / del / enter。调用方（/api/secure-key、
-    进而前端 JS）不需要知道这一下到底是 KeyEvent 还是坐标点击——由探测链
-    （_PROBES）现场判断界面类型后自动选择。不打印 key 的值——连续调用的
-    序列本身就是 PIN，日志里不该留下任何一位。"""
+def unlock_device(pin, device_serial=None):
+    """
+    盲解锁：不看画面直接把 PIN 发进锁屏。用于 OPPO/ColorOS 这类把整个锁屏标成
+    安全层（scrcpy 里黑屏、看不到密码盘）的机型——实测注入的按键仍能进密码框。
+    唤醒 → 上滑调出密码盘 → 逐位发数字键（KEYCODE_0..9 = 7..16）→ 回车提交。
+    注意：全程不打印 PIN；PIN 只在本函数内用于拼按键，不落任何日志。
+    """
     serial = resolve_device_serial(device_serial)
     if not serial:
         return {"ok": False, "error": "no-device"}
-    key = str(key)
-    if key not in _SECURE_KEY_CODES:
-        return {"ok": False, "error": "invalid-key"}
+    pin = str(pin or "").strip()
+    if not pin.isdigit() or not (4 <= len(pin) <= 16):
+        return {"ok": False, "error": "invalid-pin"}
     try:
-        strategy = _detect_secure_input_strategy(key, serial)
-        result = strategy.send(key, serial)
-        if not result.get("ok"):
-            print(f"send_key: {strategy.name} strategy failed: {result.get('error')}")
-        return result
+        _run(adb_cmd("shell", "input keyevent KEYCODE_WAKEUP", device_serial=serial),
+             capture_output=True, text=True, timeout=5)
+        time.sleep(0.4)
+        # 已经是解锁状态就别再输 PIN（避免把数字打进某个 App）。
+        if _device_locked(serial) is False:
+            return {"ok": True, "already": True}
+
+        size = _get_screen_size(serial)
+        if size:
+            w, h = size
+            x = w // 2
+            _run(adb_cmd("shell",
+                         f"input swipe {x} {int(h * 0.85)} {x} {int(h * 0.30)} 150",
+                         device_serial=serial),
+                 capture_output=True, text=True, timeout=6)
+            time.sleep(0.7)
+
+        # 逐位数字键；一条命令发完，减少往返。
+        keys = " ".join(str(7 + int(c)) for c in pin)
+        _run(adb_cmd("shell", f"input keyevent {keys}", device_serial=serial),
+             capture_output=True, text=True, timeout=8)
+        time.sleep(0.3)
+        # 提交（很多 PIN 到位会自动提交，此时回车落在桌面上无害）。
+        _run(adb_cmd("shell", "input keyevent 66", device_serial=serial),
+             capture_output=True, text=True, timeout=5)
+        time.sleep(0.6)
+
+        locked = _device_locked(serial)
+        print(f"unlock: {'still locked' if locked else 'unlocked'}")
+        return {"ok": locked is False, "locked": bool(locked)}
     except Exception as e:
-        print(f"send_key failed: {e}")
+        print(f"unlock failed: {e}")
         return {"ok": False, "error": str(e)}
 
 

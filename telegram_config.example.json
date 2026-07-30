@@ -1,9 +1,0 @@
-{
-  "enabled": false,
-  "bot_token": "",
-  "chat_id": "",
-  "proxy": "http://127.0.0.1:7897",
-  "poll_interval_s": 10,
-  "unread_reminder_min": 10,
-  "_help": "复制成 telegram_config.json 再填。bot_token 找 @BotFather 拿；chat_id 可先给机器人发条消息后运行 python tg_setup.py 自动获取；proxy 是本机代理(Clash Verge 默认 7897)，能直连就留空。填好后 enabled 改 true，重启服务。unread_reminder_min：消息未读满这么多分钟才提醒一次（同一条消息不会重复提醒，读掉后重新计时），不填默认 10。此文件是模板、不含密钥；真实配置 telegram_config.json 已 gitignore。"
-}

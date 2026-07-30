@@ -24,6 +24,3 @@ dist/
 Thumbs.db
 Desktop.ini
 .DS_Store
-
-# Telegram 推送凭据（含 bot_token，绝不上传）
-telegram_config.json

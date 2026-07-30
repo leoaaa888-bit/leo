@@ -17,7 +17,7 @@ from threading import Lock
 from typing import Optional
 
 import uvicorn
-from fastapi import Body, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -27,7 +27,7 @@ from scrcpy import (
     trigger_device_screenshot,
     get_notification_state,
     wake_for_unlock,
-    send_key,
+    unlock_device,
     open_app_drawer,
     set_device_ime_visible,
     reboot_device,
@@ -42,7 +42,6 @@ from scrcpy import (
     DEFAULT_ADB_PATH,
     DEFAULT_LOCAL_PORT,
 )
-import telegram_notify
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -479,42 +478,19 @@ def api_screenshot(device_serial: Optional[str] = Query(None)):
     return JSONResponse({"error": "screenshot failed"}, status_code=500)
 
 
-@app.post("/api/secure-key")
-async def api_secure_key(
-    key: str = Body(..., embed=True),
+@app.post("/api/unlock")
+async def api_unlock(
+    pin: str = Body(..., embed=True),
     device_serial: Optional[str] = Body(None, embed=True),
 ):
-    """Secure Input：往一块因 FLAG_SECURE 黑屏的数字密码界面发一个键
-    （0-9 / del / enter）。锁屏、Secret Album、微信/支付宝应用锁、银行 App
-    等所有黑屏数字键盘场景通用，走同一个接口。key 走请求体，不进 URL 日志。"""
+    """盲解锁：把 PIN 发进锁屏（用于锁屏黑屏的机型）。PIN 走请求体，不进 URL 日志。"""
     serial = device_serial
     if serial is None:
         with session_lock:
             if active_session is not None:
                 serial = active_session.device_serial
-    state = await asyncio.to_thread(send_key, key, serial)
+    state = await asyncio.to_thread(unlock_device, pin, serial)
     return JSONResponse(state)
-
-
-@app.post("/api/click-debug")
-async def api_click_debug(request: Request):
-    """排查"部分按钮点不动"专用：网页每次按下/触摸起点把坐标换算的完整过程发
-    到这里，直接打印进服务端日志——操作手机的人和看日志的人不是同一边，浏览器
-    控制台里的输出传不过来，只能落在这。诊断用完应该整段删掉，不是长期接口。"""
-    try:
-        d = await request.json()
-    except Exception:
-        return JSONResponse({"ok": False})
-    print(
-        "click-debug: client=({},{}) rect={} offset=({},{}) display=({},{}) "
-        "device=({},{}) local=({},{}) verdict={} tap=({},{})".format(
-            d.get("clientX"), d.get("clientY"), d.get("rect"),
-            d.get("offsetX"), d.get("offsetY"), d.get("displayW"), d.get("displayH"),
-            d.get("deviceW"), d.get("deviceH"), d.get("localX"), d.get("localY"),
-            d.get("verdict"), d.get("deviceX"), d.get("deviceY"),
-        )
-    )
-    return JSONResponse({"ok": True})
 
 
 @app.post("/api/reboot")
@@ -555,15 +531,13 @@ async def api_wake(device_serial: Optional[str] = Query(None)):
 
 @app.get("/api/notifications")
 async def api_notifications(device_serial: Optional[str] = Query(None)):
-    """任意 App 有"真实消息通知"（图标会显示角标的那种，不限于微信/QQ/Soul）
-    且不在前台时返回 alert=true，供网页悬浮球变红。packages=None 让
-    get_notification_state 不按包名过滤——见该函数的文档字符串。"""
+    """QQ / 微信 / Soul 有新消息时返回 alert=true，供网页悬浮球变红。"""
     serial = device_serial
     if serial is None:
         with session_lock:
             if active_session is not None:
                 serial = active_session.device_serial
-    state = await asyncio.to_thread(get_notification_state, serial, None)
+    state = await asyncio.to_thread(get_notification_state, serial)
     return JSONResponse(state)
 
 
@@ -763,77 +737,6 @@ async def ws_control(websocket: WebSocket, token: str = Query(...)):
         if session.control_ws is websocket:
             session.control_ws = None
             print("control disconnected (media session kept)")
-
-
-# —— Telegram 消息推送：后台轮询，未读消息持续超过 N 分钟才提醒一次 ——
-# 只在配置齐全(telegram_config.json 填好 token+chat_id 且 enabled=true)时才轮询，
-# 否则完全休眠——所以没配置时不产生任何额外 adb 或网络开销。
-_tg_unread_since = {}   # pkg -> 首次看到它未读的时间戳；打开 App 读掉就清除
-_tg_notified = set()    # 本轮未读期间已经提醒过的包名，读过一次后随上面一起清除
-
-_TG_DEFAULT_REMINDER_MIN = 10
-
-
-async def _telegram_notify_loop():
-    global _tg_unread_since, _tg_notified
-    serial = resolve_device_serial(None)
-    model = get_device_model(serial) or serial or "Phone"
-    while True:
-        cfg = telegram_notify.load_config()
-        if not telegram_notify.is_configured(cfg):
-            _tg_unread_since = {}
-            _tg_notified = set()
-            await asyncio.sleep(20)
-            continue
-        try:
-            state = await asyncio.to_thread(get_notification_state, serial)
-        except Exception as e:
-            print(f"telegram loop poll error: {e}")
-            state = None
-        if state and state.get("ok"):
-            current = set(state.get("packages") or [])
-            now = time.time()
-
-            # 新出现的未读：记下首次看到的时间，从这一刻开始计时。
-            for pkg in current - set(_tg_unread_since):
-                _tg_unread_since[pkg] = now
-            # 已经读掉的：清计时和提醒标记，下次再未读会重新计时。
-            for pkg in set(_tg_unread_since) - current:
-                _tg_unread_since.pop(pkg, None)
-                _tg_notified.discard(pkg)
-
-            try:
-                threshold_min = float(cfg.get("unread_reminder_min") or _TG_DEFAULT_REMINDER_MIN)
-                if threshold_min <= 0:
-                    threshold_min = _TG_DEFAULT_REMINDER_MIN
-            except (TypeError, ValueError):
-                threshold_min = _TG_DEFAULT_REMINDER_MIN
-            threshold_s = threshold_min * 60
-
-            # 未读超过阈值、且这轮未读期间还没提醒过的，推一次。
-            for pkg in sorted(current):
-                since = _tg_unread_since.get(pkg)
-                if since is None or pkg in _tg_notified or now - since < threshold_s:
-                    continue
-                res = await asyncio.to_thread(
-                    telegram_notify.send_message,
-                    f"📱 New message ({model})", cfg,
-                )
-                if res.get("ok"):
-                    _tg_notified.add(pkg)
-                else:
-                    print(f"telegram send failed: {res.get('error')}")
-        interval = cfg.get("poll_interval_s") or 10
-        try:
-            interval = max(5, int(interval))
-        except (TypeError, ValueError):
-            interval = 10
-        await asyncio.sleep(interval)
-
-
-@app.on_event("startup")
-async def _start_background_tasks():
-    asyncio.create_task(_telegram_notify_loop())
 
 
 def main():

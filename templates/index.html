@@ -638,20 +638,7 @@
             user-select: none;
         }
 
-        canvas#player {
-            image-rendering: auto;
-            /* canvas.width/height (the drawing buffer) is set to the device's
-               native resolution in video_player.js and frames are blitted to
-               fill that buffer 1:1 — but object-fit defaults to "fill" for a
-               replaced element with no rule of its own, so if this CSS box's
-               aspect ratio ever drifts even slightly from the buffer's, the
-               canvas stretches instead of letterboxing. input.js's coordinate
-               math (getDisplayMetrics) assumes contain-style letterboxing —
-               matching it here removes that gap instead of relying on the
-               container always being sized pixel-perfect to the same ratio. */
-            object-fit: contain;
-            object-position: center;
-        }
+        canvas#player { image-rendering: auto; }
 
         video#fallback-player {
             object-fit: contain;
@@ -1456,9 +1443,9 @@
             inset: 0;
             z-index: 100001;   /* 高于诊断面板，锁屏时它最优先 */
             display: flex;
-            align-items: flex-end;   /* 贴底部，不在屏幕中间 */
+            align-items: center;
             justify-content: center;
-            padding: 24px 24px calc(24px + env(safe-area-inset-bottom, 0px));
+            padding: 24px;
             background: rgba(0, 0, 0, 0.72);
             backdrop-filter: blur(6px);
             -webkit-backdrop-filter: blur(6px);
@@ -1469,7 +1456,7 @@
         .pin-card {
             width: 100%;
             max-width: 320px;
-            padding: 22px 20px 20px;
+            padding: 22px 20px 18px;
             border-radius: 16px;
             border: 1px solid var(--line-strong);
             background: rgba(18, 20, 26, 0.96);
@@ -1519,91 +1506,25 @@
             color: var(--faint);
         }
 
-        /* —— Secure Input 数字键盘：锁屏/Secret Album/应用锁等黑屏数字密码
-           界面通用，只认 0-9，不做字母键盘。圆点只显示位数，不回显数字。 —— */
-        .pin-dots {
+        .pin-actions {
             display: flex;
-            justify-content: center;
             gap: 10px;
-            margin-bottom: 18px;
-            flex-wrap: wrap;
+            margin-top: 16px;
         }
 
-        .pin-dot {
-            width: 11px;
-            height: 11px;
-            border-radius: 50%;
-            border: 1px solid var(--line-strong);
-            background: transparent;
-            transition: background 0.15s var(--ease, ease), border-color 0.15s;
-        }
-
-        .pin-dot.filled {
-            background: var(--accent);
-            border-color: var(--accent);
-        }
-
-        .pin-keypad {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
-        }
-
-        .pin-key {
-            appearance: none;
+        .pin-btn {
+            flex: 1;
+            padding: 11px 0;
+            font-size: 15px;
+            border-radius: 10px;
             border: 1px solid var(--line-strong);
             background: rgba(255, 255, 255, 0.06);
-            color: var(--text);
-            font-size: 20px;
-            font-weight: 500;
-            padding: 14px 0;
-            border-radius: 12px;
             cursor: pointer;
-            touch-action: manipulation;
-            -webkit-user-select: none;
-            user-select: none;
-            -webkit-tap-highlight-color: transparent;
         }
 
-        .pin-key:active {
-            background: rgba(61, 220, 132, 0.18);
+        .pin-btn-primary {
             border-color: rgba(61, 220, 132, 0.5);
-        }
-
-        .pin-key-ghost {
-            font-size: 13px;
-            color: var(--faint);
-        }
-
-        .pin-options {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 8px 14px;
-            margin-top: 16px;
-            font-size: 12.5px;
-            color: var(--faint);
-        }
-
-        .pin-remember,
-        .pin-auto-enter {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            cursor: pointer;
-            white-space: nowrap;
-        }
-
-        .pin-auto-enter select {
-            appearance: none;
-            border: 1px solid var(--line-strong);
-            background: #0E1014;
-            color: var(--text);
-            font-size: 12.5px;
-            padding: 2px 5px;
-            border-radius: 6px;
-            font-family: inherit;
+            background: rgba(61, 220, 132, 0.16);
         }
 
         .diag-overlay {
@@ -1699,8 +1620,28 @@
             padding: 10px 16px 14px;
         }
 
-        .diag-unlock .diag-btn {
+        .unlock-pin {
             flex: 1;
+            min-width: 0;
+            appearance: none;
+            border: 1px solid var(--line-strong);
+            background: #0E1014;
+            color: var(--text);
+            font-size: 16px;   /* ≥16px 防 iOS 聚焦缩放 */
+            padding: 8px 12px;
+            border-radius: 8px;
+            outline: none;
+            font-family: inherit;
+        }
+
+        .unlock-remember {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 13px;
+            color: var(--muted);
+            white-space: nowrap;
+            cursor: pointer;
         }
 
         /* —— 粘贴到手机 —— */
@@ -1827,7 +1768,7 @@
             color: var(--text);
         }
     </style>
-    <script src="/static/js/input.js?v=31"></script>
+    <script src="/static/js/input.js?v=29"></script>
     <script src="/static/js/exp-golomb.js?v=21"></script>
     <script src="/static/js/h264-sps-parser.js?v=22"></script>
     <script src="/static/js/video_parser.js?v=23"></script>
@@ -2032,37 +1973,20 @@
         <div class="offline-hotspot" id="offline-hotspot" aria-hidden="true"></div>
     </div>
 
-    <!-- Secure Input：数字密码键盘，唯一的一份实现，两个入口共用——
-         ①锁屏检测到黑屏时自动弹出 ②长按悬浮球→诊断面板手动呼出（微信锁/
-         支付宝锁/秘密相册/银行 App 等黑屏数字密码界面）。只认 0-9，不做字母键盘：
-         画面是黑的，但输入事件仍能送达，点一下就立即发一个 KeyEvent。 -->
+    <!-- 锁屏时的 PIN 输入框：OPPO(ColorOS) 的锁屏是 FLAG_SECURE，在投屏里是一整片
+         黑屏、看不到密码盘，所以在网页这一侧收 PIN，用盲解锁发进去。 -->
     <div class="pin-gate" id="pin-gate" hidden>
         <div class="pin-card">
-            <p class="pin-title" id="pin-gate-title">手机已锁屏</p>
-            <p class="pin-sub" id="pin-gate-sub">锁屏画面无法显示，请输入手机 PIN 解锁</p>
-            <div class="pin-dots" id="pin-gate-dots" aria-live="polite" aria-label="已输入位数"></div>
-            <div class="pin-keypad" id="pin-gate-keypad">
-                <button type="button" class="pin-key" data-key="1">1</button>
-                <button type="button" class="pin-key" data-key="2">2</button>
-                <button type="button" class="pin-key" data-key="3">3</button>
-                <button type="button" class="pin-key" data-key="4">4</button>
-                <button type="button" class="pin-key" data-key="5">5</button>
-                <button type="button" class="pin-key" data-key="6">6</button>
-                <button type="button" class="pin-key" data-key="7">7</button>
-                <button type="button" class="pin-key" data-key="8">8</button>
-                <button type="button" class="pin-key" data-key="9">9</button>
-                <button type="button" class="pin-key pin-key-ghost" data-action="clear">Clear</button>
-                <button type="button" class="pin-key" data-key="0">0</button>
-                <button type="button" class="pin-key pin-key-ghost" data-action="del" aria-label="删除">⌫</button>
-            </div>
-            <div class="pin-options">
-                <label class="pin-remember" id="pin-gate-remember-row">
-                    <input type="checkbox" id="pin-gate-remember" /> 记住，下次自动解锁
-                </label>
-                <label class="pin-auto-enter">
-                    <input type="checkbox" id="pin-gate-auto-enter" /> Auto Enter
-                    <select id="pin-gate-len" aria-label="PIN 长度"></select>位
-                </label>
+            <p class="pin-title">手机已锁屏</p>
+            <p class="pin-sub">锁屏画面无法显示，请输入手机 PIN 解锁</p>
+            <input type="password" id="pin-gate-input" class="pin-input" inputmode="numeric"
+                   autocomplete="off" placeholder="手机 PIN" aria-label="手机 PIN" />
+            <label class="pin-remember">
+                <input type="checkbox" id="pin-gate-remember" /> 记住，下次自动解锁
+            </label>
+            <div class="pin-actions">
+                <button type="button" id="pin-gate-cancel" class="pin-btn">稍后</button>
+                <button type="button" id="pin-gate-ok" class="pin-btn pin-btn-primary">解锁</button>
             </div>
         </div>
     </div>
@@ -2081,10 +2005,12 @@
             </div>
             <textarea id="diag-text" class="diag-text" readonly wrap="off" aria-label="诊断日志"></textarea>
 
-            <!-- Secure Input 手动入口：适用于锁屏黑屏、微信锁、支付宝锁、
-                 秘密相册、银行 App 等所有黑屏数字密码界面，不针对某个 App 单独开发。 -->
+            <!-- 盲解锁：锁屏黑屏的机型（如 OPPO/ColorOS）用它把 PIN 发进去解锁。 -->
             <div class="diag-unlock">
-                <button type="button" id="diag-secure-input" class="diag-btn diag-copy">🔒 数字密码键盘</button>
+                <input type="password" id="unlock-pin" class="unlock-pin" inputmode="numeric"
+                       autocomplete="off" placeholder="手机 PIN（盲解锁）" aria-label="手机 PIN" />
+                <label class="unlock-remember"><input type="checkbox" id="unlock-remember" /> 记住</label>
+                <button type="button" id="unlock-send" class="diag-btn diag-copy">解锁</button>
             </div>
 
             <!-- 粘贴到手机：手机端（iPhone）没有本机键盘映射通路，靠这里把文字送过去。
@@ -2207,15 +2133,8 @@
         }
 
         // 盲解锁 PIN（可选记住）。仅存在本机浏览器；用于锁屏黑屏机型远程解锁。
-        // —— Secure Input：黑屏数字密码通用键盘 ——
-        // 覆盖场景：手机锁屏、Secret Album、OPPO/微信/支付宝应用锁、银行 App PIN……
-        // 画面因 FLAG_SECURE 变黑，但输入事件仍能送达。这里只有一份实现：点一个键就
-        // 立即发一个 KeyEvent（POST /api/secure-key），不判断是哪个场景、不针对
-        // 某个 App 单独开发。两个触发入口（锁屏自动弹出 / 诊断面板手动呼出）共用它。
         const DEVICE_PIN_KEY = 'devicePin';
         const REMEMBER_PIN_KEY = 'rememberPin';
-        const SECURE_PIN_LEN_KEY = 'securePinLen';
-        const SECURE_AUTO_ENTER_KEY = 'secureAutoEnter';
         function loadDevicePin() { return localStorage.getItem(DEVICE_PIN_KEY) || ''; }
         function saveDevicePin(pin) {
             if (pin) { localStorage.setItem(DEVICE_PIN_KEY, pin); }
@@ -2223,80 +2142,71 @@
         }
         function loadRememberPin() { return localStorage.getItem(REMEMBER_PIN_KEY) === 'true'; }
         function saveRememberPin(on) { localStorage.setItem(REMEMBER_PIN_KEY, on ? 'true' : 'false'); }
-        function loadSecurePinLen() {
-            const n = parseInt(localStorage.getItem(SECURE_PIN_LEN_KEY), 10);
-            return (n >= 4 && n <= 16) ? n : 6;   // 国内常见微信/支付宝锁多为 6 位
-        }
-        function saveSecurePinLen(n) { localStorage.setItem(SECURE_PIN_LEN_KEY, String(n)); }
-        function loadAutoEnter() {
-            const v = localStorage.getItem(SECURE_AUTO_ENTER_KEY);
-            return v === null ? true : v === 'true';   // 默认开启
-        }
-        function saveAutoEnter(on) { localStorage.setItem(SECURE_AUTO_ENTER_KEY, on ? 'true' : 'false'); }
 
+        // 把 PIN 发到后端盲解锁（PIN 走请求体，不进 URL / 日志）。
+        // quiet=true 时不提示“正在解锁/已解锁”（自动解锁用），但失败仍提示。
         // 手机是否已解锁。超人球只在解锁进主界面后才显示——锁屏时那几个导航键
         // 本来也没用，而且 OPPO 锁屏是黑的，一个徽标浮在黑屏上很突兀。
+        // 不额外轮询锁屏状态（那要多一次 dumpsys trust，约 180ms/次），
+        // 改为复用已有信号：/api/wake 的 locked、解锁接口的结果、以及盖回伪装页。
         function setDeviceUnlocked(on) {
             document.documentElement.classList.toggle('device-unlocked', !!on);
         }
 
-        // 单键发送：串成一条队列。数字按顺序敲进密码框，顺序错了 PIN 就不对，
-        // 而并发的 fetch 请求完成顺序不保证和发出顺序一致，所以这里强制排队，
-        // 而不是每次点击各发各的。
-        let _secureKeyQueue = Promise.resolve();
-        function sendSecureKey(key) {
-            const run = () => fetch('/api/secure-key', {
+        // 返回 Promise<boolean>：调用方（如 PIN 弹框）据此决定是否关闭。
+        function sendUnlock(pin, quiet) {
+            if (!quiet) {
+                showKeyboardHint('正在解锁…');
+            }
+            return fetch('/api/unlock', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key: key }),
-            }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-            const p = _secureKeyQueue.then(run);
-            _secureKeyQueue = p.catch(() => {});
-            return p;
-        }
-
-        // 自动逐位敲键盘（记住的 PIN 自动解锁用）：数字间留一点间隔，让设备端
-        // 按顺序收到——这就是“自动帮你点了一遍键盘”，不是另一套批量提交逻辑。
-        async function driveSecureInput(pin, quiet) {
-            if (!quiet) { showKeyboardHint('正在解锁…'); }
-            for (const ch of String(pin)) {
-                await sendSecureKey(ch);
-                await new Promise((r) => setTimeout(r, 120));
-            }
-            await sendSecureKey('enter');
-            await new Promise((r) => setTimeout(r, 500));
-            fetch('/api/wake?ts=' + Date.now(), { cache: 'no-store' })
+                body: JSON.stringify({ pin: pin }),
+            })
                 .then((r) => (r.ok ? r.json() : null))
                 .then((d) => {
-                    const ok = d && d.locked === false;
-                    setDeviceUnlocked(!!ok);
-                    if (!quiet) { showKeyboardHint(ok ? '已解锁' : '解锁失败，PIN 是否正确？'); }
+                    if (d && d.ok) {
+                        if (!quiet) { showKeyboardHint('已解锁'); }
+                        setDeviceUnlocked(true);   // 进主界面了，超人球可以出来
+                        return true;
+                    }
+                    setDeviceUnlocked(false);
+                    if (d && d.error === 'invalid-pin') {
+                        showKeyboardHint('PIN 格式不对（4–16 位数字）');
+                    } else {
+                        showKeyboardHint('解锁失败，PIN 是否正确？');
+                    }
+                    return false;
                 })
-                .catch(() => {});
+                .catch(() => {
+                    if (!quiet) { showKeyboardHint('解锁请求失败，检查连接'); }
+                    return false;
+                });
         }
 
         // 进入 / 首帧时的动作：
-        //   没锁                → 只是唤醒了屏幕，别的不用管
-        //   锁着 + 记住了 PIN   → 自动逐位敲键盘解锁
-        //   锁着 + 没记住       → 弹 Secure Input 键盘，等用户自己点（仅 OPPO 这种
-        //                         锁屏黑屏的机型；谷歌2 锁屏画面看得见，直接在画面
-        //                         上滑动输密码即可，不弹框）
+        //   存了 PIN            → 直接自动盲解锁，落到桌面
+        //   没存 PIN 且手机锁着 → 弹 PIN 输入框（仅 OPPO 这种锁屏黑屏的机型，
+        //                         否则用户面对的就是一整片黑屏，无从下手）
+        //   没锁                → 只唤醒
+        // 谷歌2 锁屏画面看得见，唤醒后直接在画面上滑动输密码即可，不弹框。
         function wakeOrUnlock(quiet) {
+            if (loadRememberPin() && loadDevicePin()) {
+                sendUnlock(loadDevicePin(), quiet);
+                return;
+            }
             fetch('/api/wake?ts=' + Date.now(), { cache: 'no-store' })
                 .then((r) => (r.ok ? r.json() : null))
                 .then((d) => {
-                    if (!d) { return; }
-                    setDeviceUnlocked(d.locked === false);
-                    if (!d.locked) { return; }
-                    if (loadRememberPin() && loadDevicePin()) {
-                        driveSecureInput(loadDevicePin(), quiet);
-                    } else if (isTargetDevice) {
-                        showSecureInput({ mode: 'lock' });
+                    if (d) { setDeviceUnlocked(d.locked === false); }
+                    if (d && d.locked && isTargetDevice) {
+                        showPinPrompt();
                     }
                 })
                 .catch(() => {});
         }
 
+        // —— 锁屏 PIN 输入框 ——
         // 自带一份 tap 绑定：诊断面板里那个 bindTapAction 是定义在它自己作用域内的
         // const，这里取不到。iOS 上必须同时处理 touchend 与 click，并互相去重，
         // 否则会触发两次（也会连带把页面放大）。
@@ -2306,213 +2216,61 @@
             el.addEventListener('touchend', (e) => {
                 e.preventDefault();
                 touchHandled = true;
-                action(e);
+                action();
             }, { passive: false });
             el.addEventListener('click', (e) => {
                 e.preventDefault();
                 if (touchHandled) { touchHandled = false; return; }
-                action(e);
+                action();
             });
         }
 
-        // —— Secure Input 键盘状态：唯一一份，两个入口（自动弹出 / 诊断面板手动
-        // 呼出）共用同一个 DOM、同一套逻辑，只有 mode 不同（影响提交后的反馈方式：
-        // 锁屏能查“是否已解锁”，微信锁/支付宝锁这类没有通用的办法验证是否成功）。
-        const secureInput = { digits: [], mode: 'lock', bound: false };
-
-        function secureInputRenderDots() {
-            const dots = document.getElementById('pin-gate-dots');
-            if (!dots) { return; }
-            const len = Math.max(secureInput.digits.length, loadSecurePinLen());
-            dots.innerHTML = '';
-            for (let i = 0; i < len; i++) {
-                const d = document.createElement('span');
-                d.className = 'pin-dot' + (i < secureInput.digits.length ? ' filled' : '');
-                dots.appendChild(d);
-            }
-        }
-
-        // 把已经打到设备上的位数一起清掉，否则网页这边清零了、手机那边还留着，
-        // 下次再点数字键两边就对不上了。Clear 按钮和退出前的兜底清理都走这里。
-        function secureInputClearDevice() {
-            while (secureInput.digits.length > 0) {
-                secureInput.digits.pop();
-                sendSecureKey('del');
-            }
-            secureInputRenderDots();
-        }
-
-        function secureInputSubmit() {
-            sendSecureKey('enter');
-            const remember = document.getElementById('pin-gate-remember');
-            if (secureInput.mode === 'lock' && remember) {
-                const pin = secureInput.digits.join('');
-                if (remember.checked && /^\d{4,16}$/.test(pin)) {
-                    saveDevicePin(pin);
-                    saveRememberPin(true);
-                } else {
-                    saveDevicePin('');
-                    saveRememberPin(false);
-                }
-            }
-            secureInput.digits = [];
-            secureInputRenderDots();
-
-            if (secureInput.mode === 'lock') {
-                // 锁屏场景可以查 /api/wake 的 locked 字段验证是否真解开了。
-                // Secure Input Engine 现在每个键都先探测一次界面类型/控件树才决定
-                // 怎么发（见 scrcpy.py 的 _PROBES），单次判断依然很快，但连续 6 位 +
-                // 回车累计下来比以前纯发 KeyEvent 多了一截延迟——原来固定等 500ms
-                // 查一次的时间点可能卡在“Keyguard 还没处理完”那一刻，查到的还是
-                // locked:true，于是判定失败，键盘就一直留在屏幕上不消失。
-                // 改成间隔重试几次，给慢一点的情况留出追上的时间，而不是只赌一次。
-                showKeyboardHint('正在解锁…');
-                const checkUnlocked = (attempt) => {
-                    fetch('/api/wake?ts=' + Date.now(), { cache: 'no-store' })
-                        .then((r) => (r.ok ? r.json() : null))
-                        .then((d) => {
-                            const ok = d && d.locked === false;
-                            setDeviceUnlocked(!!ok);
-                            if (ok) {
-                                showKeyboardHint('已解锁');
-                                hideSecureInput();
-                            } else if (attempt < 3) {
-                                setTimeout(() => checkUnlocked(attempt + 1), 500);
-                            } else {
-                                showKeyboardHint('解锁失败，PIN 是否正确？');
-                            }
-                        })
-                        .catch(() => showKeyboardHint('解锁请求失败，检查连接'));
-                };
-                setTimeout(() => checkUnlocked(0), 500);
-            } else {
-                // 微信锁/支付宝锁/秘密相册等：没有通用信号能验证是否成功，
-                // 不针对某个 App 单独判断，只做到“已经发出去了”。
-                showKeyboardHint('已发送');
-                hideSecureInput();
-            }
-        }
-
-        function hideSecureInput() {
+        let pinPromptBound = false;
+        function hidePinPrompt() {
             const gate = document.getElementById('pin-gate');
             if (!gate) { return; }
-            if (secureInput.digits.length > 0) { secureInputClearDevice(); }
             gate.hidden = true;
+            const input = document.getElementById('pin-gate-input');
+            if (input) { input.value = ''; input.blur(); }
         }
-
-        function showSecureInput(opts) {
+        function showPinPrompt() {
             const gate = document.getElementById('pin-gate');
-            if (!gate) { return; }
-            if (gate.hidden === false) { return; }   // 已经开着，别重复弹
-            secureInput.mode = (opts && opts.mode) || 'generic';
-            secureInput.digits = [];
-
-            const title = document.getElementById('pin-gate-title');
-            const sub = document.getElementById('pin-gate-sub');
+            const input = document.getElementById('pin-gate-input');
             const remember = document.getElementById('pin-gate-remember');
-            const rememberRow = document.getElementById('pin-gate-remember-row');
-            if (secureInput.mode === 'lock') {
-                if (title) { title.textContent = '手机已锁屏'; }
-                if (sub) { sub.textContent = '锁屏画面无法显示，请输入手机 PIN 解锁'; sub.hidden = false; }
-                if (rememberRow) { rememberRow.hidden = false; }
-                if (remember) { remember.checked = loadRememberPin(); }
-            } else {
-                if (title) { title.textContent = 'Secure Input'; }
-                if (sub) { sub.hidden = true; }
-                if (rememberRow) { rememberRow.hidden = true; }
-            }
-
-            const autoEnter = document.getElementById('pin-gate-auto-enter');
-            if (autoEnter) { autoEnter.checked = loadAutoEnter(); }
-            const lenSelect = document.getElementById('pin-gate-len');
-            if (lenSelect && !lenSelect.options.length) {
-                for (let n = 4; n <= 16; n++) {
-                    const o = document.createElement('option');
-                    o.value = String(n);
-                    o.textContent = String(n);
-                    lenSelect.appendChild(o);
-                }
-            }
-            if (lenSelect) { lenSelect.value = String(loadSecurePinLen()); }
-
-            secureInputRenderDots();
+            if (!gate || !input) { return; }
+            if (gate.hidden === false) { return; }   // 已经开着，别重复弹
             gate.hidden = false;
+            if (remember) { remember.checked = loadRememberPin(); }
 
-            if (!secureInput.bound) {
-                secureInput.bound = true;
-                document.querySelectorAll('#pin-gate .pin-key').forEach((btn) => {
-                    bindPinTap(btn, () => {
-                        const action = btn.dataset.action;
-                        if (action === 'clear') {
-                            secureInputClearDevice();
-                            return;
-                        }
-                        const key = action === 'del' ? 'del' : btn.dataset.key;
-                        if (key === 'del') {
-                            if (secureInput.digits.length === 0) { return; }
-                            secureInput.digits.pop();
-                            sendSecureKey('del');
-                        } else {
-                            if (secureInput.digits.length >= 16) { return; }   // 安全上限
-                            secureInput.digits.push(key);
-                            sendSecureKey(key);
-                        }
-                        secureInputRenderDots();
-                        if (key !== 'del' && autoEnter && autoEnter.checked
-                                && secureInput.digits.length === loadSecurePinLen()) {
-                            secureInputSubmit();
-                        }
-                    });
-                });
-                // 稍后/确认两个按钮已去掉（Auto Enter 默认开着，位数收满自动提交）。
-                // 点卡片外面那圈遮罩相当于原来的"稍后"，作为唯一的退出方式留着。
-                // 不能用 bindPinTap——它会无条件 preventDefault，卡片内任何一次点击
-                // 冒泡上来都会被拦一下，连带把"记住"复选框、位数下拉框的浏览器原生
-                // 点击行为一起挡掉（手机上表现为怎么点都勾不上）。改成只在点击目标
-                // 就是遮罩本身（不是卡片或其后代）时才关闭，且完全不调用 preventDefault，
-                // 卡片内部控件的原生交互不受影响。
-                gate.addEventListener('click', (e) => {
-                    if (e.target === gate) { hideSecureInput(); }
-                });
-                if (autoEnter) {
-                    autoEnter.addEventListener('change', () => saveAutoEnter(autoEnter.checked));
-                }
-                if (lenSelect) {
-                    lenSelect.addEventListener('change', () => {
-                        saveSecurePinLen(parseInt(lenSelect.value, 10) || 6);
-                        secureInputRenderDots();
-                    });
-                }
-                // 电脑端：直接用物理键盘打数字/退格/回车，不必用鼠标点屏幕键。
-                // 只在密码框开着时接管按键，走的还是屏幕键那一套 sendSecureKey 逻辑，
-                // 不新增第二条输入通路。绑一次，靠 gate.hidden 判断是否生效。
-                document.addEventListener('keydown', (e) => {
-                    if (gate.hidden) { return; }
-                    if (e.metaKey || e.ctrlKey || e.altKey) { return; }
-                    let key = null;
-                    if (e.key >= '0' && e.key <= '9') { key = e.key; }
-                    else if (e.key === 'Backspace' || e.key === 'Delete') { key = 'del'; }
-                    else if (e.key === 'Enter') { key = 'enter'; }
-                    else if (e.key === 'Escape') { e.preventDefault(); hideSecureInput(); return; }
-                    else { return; }
-                    e.preventDefault();
-                    if (key === 'enter') { secureInputSubmit(); return; }
-                    if (key === 'del') {
-                        if (secureInput.digits.length === 0) { return; }
-                        secureInput.digits.pop();
-                        sendSecureKey('del');
+            if (!pinPromptBound) {
+                pinPromptBound = true;
+                const submit = () => {
+                    const pin = (input.value || '').trim();
+                    if (!/^\d{4,16}$/.test(pin)) {
+                        showKeyboardHint('请输入 4–16 位数字 PIN');
+                        return;
+                    }
+                    if (remember && remember.checked) {
+                        saveDevicePin(pin);
+                        saveRememberPin(true);
                     } else {
-                        if (secureInput.digits.length >= 16) { return; }
-                        secureInput.digits.push(key);
-                        sendSecureKey(key);
+                        saveDevicePin('');
+                        saveRememberPin(false);
                     }
-                    secureInputRenderDots();
-                    if (key !== 'del' && autoEnter && autoEnter.checked
-                            && secureInput.digits.length === loadSecurePinLen()) {
-                        secureInputSubmit();
-                    }
+                    sendUnlock(pin, false).then((ok) => {
+                        if (ok) { hidePinPrompt(); }
+                        else if (input) { input.value = ''; input.focus(); }
+                    });
+                };
+                bindPinTap(document.getElementById('pin-gate-ok'), submit);
+                bindPinTap(document.getElementById('pin-gate-cancel'), hidePinPrompt);
+                // 回车直接提交，省一次点击
+                input.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); submit(); }
                 });
             }
+            // iOS 上要等弹框真的显示出来再聚焦，否则键盘不弹
+            setTimeout(() => { try { input.focus(); } catch (e) {} }, 60);
         }
 
         // —— 悬浮球的活动范围：投屏画面之内 ——
@@ -4514,12 +4272,31 @@
             };
             bindTapAction(rebootBtn, onReboot);
 
-            // Secure Input 手动入口：适用于微信锁/支付宝锁/秘密相册/银行 App
-            // 等所有黑屏数字密码界面——打开的是和锁屏自动弹出那次完全同一个键盘。
-            bindTapAction(document.getElementById('diag-secure-input'), () => {
-                hideDiagnostics();
-                showSecureInput({ mode: 'generic' });
-            });
+            // 盲解锁：填入的 PIN 预置、记住开关、点“解锁”发送。
+            const pinInput = document.getElementById('unlock-pin');
+            const rememberBox = document.getElementById('unlock-remember');
+            if (pinInput && rememberBox) {
+                rememberBox.checked = loadRememberPin();
+                if (rememberBox.checked) {
+                    pinInput.value = loadDevicePin();
+                }
+                bindTapAction(document.getElementById('unlock-send'), () => {
+                    const pin = (pinInput.value || '').trim();
+                    if (!/^\d{4,16}$/.test(pin)) {
+                        showKeyboardHint('请输入 4–16 位数字 PIN');
+                        return;
+                    }
+                    if (rememberBox.checked) {
+                        saveDevicePin(pin);
+                        saveRememberPin(true);
+                    } else {
+                        saveDevicePin('');
+                        saveRememberPin(false);
+                    }
+                    sendUnlock(pin);
+                    hideDiagnostics();
+                });
+            }
 
             // —— 粘贴到手机 ——
             // 手机端没有本机键盘映射通路（keyboardEnabled 在移动端恒为 false），

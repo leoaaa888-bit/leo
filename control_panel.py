@@ -33,12 +33,6 @@ try:
 except Exception:
     _TRAY_OK = False
 
-try:
-    import telegram_notify
-    _TG_OK = True
-except Exception:
-    _TG_OK = False
-
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
@@ -278,42 +272,6 @@ def set_autostart(enabled: bool) -> bool:
         return False
 
 
-def desktop_shortcut_path() -> str:
-    return os.path.join(
-        os.environ.get("USERPROFILE", ""), "Desktop", STARTUP_LNK_NAME,
-    )
-
-
-def ensure_desktop_shortcut() -> None:
-    """桌面找不到控制面板入口，双击开机自启的 Startup 快捷方式又太隐蔽。
-    首次启动时若桌面还没有图标就补一个，双击直接打开窗口（不带 --autostart，
-    不会缩到托盘）。已存在则跳过；失败静默，不影响主程序启动。"""
-    lnk = desktop_shortcut_path()
-    if os.path.isfile(lnk):
-        return
-    if getattr(sys, "frozen", False):
-        target = sys.executable
-        arguments = ""
-    else:
-        target = PYTHON_EXE
-        arguments = '"{}"'.format(APP_PATH.replace("app.py", "control_panel.py"))
-    ps = (
-        "$s=New-Object -ComObject WScript.Shell;"
-        "$l=$s.CreateShortcut('{lnk}');"
-        "$l.TargetPath='{target}';"
-        "$l.Arguments='{args}';"
-        "$l.WorkingDirectory='{wd}';"
-        "$l.Save()"
-    ).format(lnk=lnk, target=target, args=arguments, wd=BASE_DIR)
-    try:
-        subprocess.run(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
-            creationflags=CREATE_NO_WINDOW, capture_output=True, text=True, timeout=15,
-        )
-    except Exception:
-        pass
-
-
 class ControlPanel:
     POLL_MS = 2500
 
@@ -335,10 +293,6 @@ class ControlPanel:
 
         os.makedirs(LOG_DIR, exist_ok=True)
         self._build_ui()
-        try:
-            ensure_desktop_shortcut()
-        except Exception:
-            pass
         self._setup_tray()
         # 关闭窗口（点 X）不退出，而是缩到系统托盘（任务栏不再显示）。
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
@@ -484,109 +438,9 @@ class ControlPanel:
         )
         self.logbox.pack(fill="both", expand=True)
 
-        self._build_telegram_section()
-
         self.status_var = tk.StringVar(value="就绪")
         ttk.Label(self.root, textvariable=self.status_var, anchor="w",
                   relief="sunken", padding=(8, 2)).pack(fill="x", side="bottom")
-
-    # —— Telegram 消息推送配置 ——
-    def _build_telegram_section(self):
-        tg = ttk.LabelFrame(self.root, text="消息推送到 Telegram", padding=(8, 6))
-        tg.pack(fill="x", padx=10, pady=(0, 8))
-
-        row = ttk.Frame(tg)
-        row.pack(fill="x")
-        ttk.Label(row, text="机器人 token：").pack(side="left")
-        self.tg_token_var = tk.StringVar()
-        self.tg_token_entry = ttk.Entry(row, textvariable=self.tg_token_var, show="*")
-        self.tg_token_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
-        self.tg_show_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(row, text="显示", variable=self.tg_show_var,
-                        command=self._tg_toggle_show).pack(side="left", padx=(0, 6))
-        self.tg_connect_btn = ttk.Button(row, text="连接并测试", command=self._tg_connect)
-        self.tg_connect_btn.pack(side="left")
-        ttk.Button(row, text="断开", command=self._tg_disconnect).pack(side="left", padx=(6, 0))
-
-        hint = ("步骤：① 找 @BotFather 创建机器人拿 token，填到上面  "
-                "② 在 Telegram 给你的机器人随便发一句话  ③ 点“连接并测试”")
-        ttk.Label(tg, text=hint, foreground="#888").pack(anchor="w", pady=(4, 0))
-        self.tg_status_var = tk.StringVar(value="")
-        ttk.Label(tg, textvariable=self.tg_status_var, anchor="w").pack(fill="x", pady=(2, 0))
-
-        self._tg_refresh_status()
-
-    def _tg_toggle_show(self):
-        self.tg_token_entry.configure(show="" if self.tg_show_var.get() else "*")
-
-    def _tg_refresh_status(self):
-        if not _TG_OK:
-            self.tg_status_var.set("状态：telegram_notify 模块缺失")
-            return
-        try:
-            c = telegram_notify.load_config()
-        except Exception:
-            c = {}
-        # 已存的 token 回填成掩码占位，不显示明文；chat_id 直接显示
-        if c.get("bot_token") and not self.tg_token_var.get():
-            self.tg_token_var.set(c["bot_token"])
-        if telegram_notify.is_configured(c):
-            self.tg_status_var.set(
-                f"状态：已连接 ✓  chat_id={c.get('chat_id')}  （enabled）")
-        elif c.get("bot_token"):
-            self.tg_status_var.set("状态：已填 token，未连接 —— 给机器人发条消息后点“连接并测试”")
-        else:
-            self.tg_status_var.set("状态：未配置")
-
-    def _tg_connect(self):
-        if not _TG_OK:
-            messagebox.showerror("Telegram", "telegram_notify 模块缺失，无法配置")
-            return
-        token = self.tg_token_var.get().strip()
-        if not token:
-            messagebox.showwarning("Telegram", "请先填机器人 token")
-            return
-        self.tg_connect_btn.configure(state="disabled")
-        self.tg_status_var.set("状态：正在连接 Telegram…")
-
-        def work():
-            try:
-                telegram_notify.save_config({"bot_token": token})
-                res = telegram_notify.auto_connect()
-            except Exception as e:
-                res = {"ok": False, "error": str(e)}
-            self.root.after(0, lambda: self._tg_connect_done(res))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _tg_connect_done(self, res):
-        self.tg_connect_btn.configure(state="normal")
-        if res.get("ok"):
-            name = res.get("chat_name", "")
-            tested = "测试消息已发送，去 Telegram 看看" if res.get("test_sent") \
-                else "但测试消息失败：" + str(res.get("test_error"))
-            self.tg_status_var.set(f"状态：已连接 ✓  chat_id={res.get('chat_id')}  {name}")
-            messagebox.showinfo("Telegram", f"连接成功！{tested}\n\n"
-                                "两台服务下次轮询（约 20 秒内）自动生效，无需手动重启。")
-        else:
-            err = res.get("error")
-            hint = res.get("hint")
-            msg = {
-                "no-token": "还没填 token",
-                "no-chat": hint or "没找到对话——先在 Telegram 给机器人发一句话，再点连接",
-            }.get(err, f"失败：{err}")
-            self.tg_status_var.set("状态：连接失败 —— " + msg)
-            messagebox.showerror("Telegram", msg)
-
-    def _tg_disconnect(self):
-        if not _TG_OK:
-            return
-        if not messagebox.askyesno("Telegram", "断开后清除本地保存的 token / chat_id，停止推送。确定吗？"):
-            return
-        telegram_notify.save_config({"bot_token": "", "chat_id": "", "enabled": False})
-        self.tg_token_var.set("")
-        self._tg_refresh_status()
-        self.tg_status_var.set("状态：已断开")
 
     # —— 设备轮询（后台线程）——
     def _start_poller(self):
