@@ -546,13 +546,25 @@ class ScrcpyInput {
         const localX = clientX - rect.left - offsetX;
         const localY = clientY - rect.top - offsetY;
 
-        if (localX < 0 || localY < 0 || localX > displayW || localY > displayH) {
+        // Reject clicks genuinely outside the video (letterbox bars), but clamp
+        // ones within a small tolerance of the edge instead of dropping them.
+        // layoutDeviceFrame() sizes the container with Math.round(), and
+        // getBoundingClientRect() can return sub-pixel values, so a tap the
+        // user visually lands right on the last row/column of screen content
+        // (a corner icon, for instance) can compute to a fraction of a pixel
+        // past displayW/displayH and previously vanished silently — no touch
+        // ever reached the device, with nothing in the UI to explain why.
+        const EDGE_TOLERANCE = 3;
+        if (localX < -EDGE_TOLERANCE || localY < -EDGE_TOLERANCE
+            || localX > displayW + EDGE_TOLERANCE || localY > displayH + EDGE_TOLERANCE) {
             return null;
         }
+        const clampedX = Math.min(Math.max(localX, 0), displayW);
+        const clampedY = Math.min(Math.max(localY, 0), displayH);
 
         return {
-            x: Math.round((localX / displayW) * this.width),
-            y: Math.round((localY / displayH) * this.height)
+            x: Math.round((clampedX / displayW) * this.width),
+            y: Math.round((clampedY / displayH) * this.height)
         };
     }
 
@@ -564,6 +576,40 @@ class ScrcpyInput {
         this.pointerX = pos.x;
         this.pointerY = pos.y;
         return true;
+    }
+
+    // 排查"某些按钮点不动"专用：只在按下/触摸起点那一刻记录一次完整换算过程
+    // （不是每个 move 都记，量太大），发到服务端日志——因为操作手机的人和排查
+    // 代码的人不是同一边，浏览器控制台这边看不到那边的输出，只能落到服务端。
+    // 有明确的“落点接受/夹紧/丢弃”三态，能直接看出是不是有固定偏移，而不用猜。
+    reportTapDiagnostics(clientX, clientY) {
+        try {
+            const { rect, offsetX, offsetY, displayW, displayH } = this.getDisplayMetrics();
+            const localX = clientX - rect.left - offsetX;
+            const localY = clientY - rect.top - offsetY;
+            const EDGE_TOLERANCE = 3;
+            let verdict = 'accepted';
+            if (localX < -EDGE_TOLERANCE || localY < -EDGE_TOLERANCE
+                || localX > displayW + EDGE_TOLERANCE || localY > displayH + EDGE_TOLERANCE) {
+                verdict = 'rejected';
+            } else if (localX < 0 || localY < 0 || localX > displayW || localY > displayH) {
+                verdict = 'clamped';
+            }
+            const pos = this.clientToDevice(clientX, clientY);
+            fetch('/api/click-debug', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    clientX, clientY,
+                    rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+                    offsetX, offsetY, displayW, displayH,
+                    deviceW: this.width, deviceH: this.height,
+                    localX, localY, verdict,
+                    deviceX: pos ? pos.x : null, deviceY: pos ? pos.y : null,
+                }),
+                keepalive: true,
+            }).catch(() => {});
+        } catch (e) { /* 诊断本身绝不能影响真实点击 */ }
     }
 
     sendTouch(action, pressure, options = {}) {
@@ -579,6 +625,7 @@ class ScrcpyInput {
 
     onPointerDown(event) {
         if (event.button === 0) {
+            this.reportTapDiagnostics(event.clientX, event.clientY);
             if (!this.updatePointer(event.clientX, event.clientY)) {
                 return;
             }
@@ -658,6 +705,7 @@ class ScrcpyInput {
             return;
         }
         this.activeTouchId = touch.identifier;
+        this.reportTapDiagnostics(touch.clientX, touch.clientY);
         if (!this.updatePointer(touch.clientX, touch.clientY)) {
             this.activeTouchId = null;
             return;
