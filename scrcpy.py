@@ -204,8 +204,11 @@ def _notification_skip(line):
 # 屏幕状态给网页判断：手机睡着了就把伪装页盖回来，让用户可以点三下唤醒进 PIN。
 # 这里用 deviceidle get screen（约 150ms）而不是 dumpsys power（约 330ms）+
 # dumpsys trust（约 160ms）：每 5 秒一次，手机内存紧张时这点开销也值得省。
+# mIsShowing 来自 dumpsys window 里的 KeyguardStateMonitor（锁屏是否显示），
+# 和 mCurrentFocus 同在这一次 dumpsys window 里，多 grep 一行即可拿到锁屏状态，
+# 不必再单独跑一次 dumpsys trust（省约 150ms/轮询）。
 _NOTIFY_SHELL = (
-    "echo @@FG@@; dumpsys window | grep mCurrentFocus; "
+    "echo @@FG@@; dumpsys window | grep -E 'mCurrentFocus|mIsShowing='; "
     "echo @@PW@@; dumpsys deviceidle get screen; "
     "echo @@NT@@; dumpsys notification --noredact | grep 'NotificationRecord('"
 )
@@ -233,7 +236,8 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
       - foreground：当前前台 App 包名
     """
     serial = resolve_device_serial(device_serial)
-    empty = {"ok": True, "alert": False, "packages": [], "foreground": None}
+    empty = {"ok": True, "alert": False, "packages": [], "foreground": None,
+             "awake": None, "locked": None}
     if not serial:
         return {**empty, "ok": False}
 
@@ -257,6 +261,7 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
     foreground = None
     alerting = []
     awake = None
+    locked = None
     for raw in (result.stdout or "").splitlines():
         line = raw.strip()
         if line == "@@FG@@":
@@ -268,8 +273,11 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
         if line == "@@NT@@":
             section = "nt"
             continue
-        if section == "fg" and "mCurrentFocus" in line and foreground is None:
-            foreground = _parse_foreground_package(line)
+        if section == "fg":
+            if "mCurrentFocus" in line and foreground is None:
+                foreground = _parse_foreground_package(line)
+            elif "mIsShowing=" in line and locked is None:
+                locked = "mIsShowing=true" in line   # keyguard 是否显示 = 是否锁屏
         elif section == "pw":
             if line in ("true", "false"):
                 awake = line == "true"   # deviceidle get screen：屏幕是否亮着
@@ -298,6 +306,8 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
         "foreground": foreground,
         # 供网页判断是否该盖回伪装页（手机睡着时盖回，方便点三下唤醒进 PIN）。
         "awake": awake,
+        # 是否锁屏：网页据此决定超人导航球显不显示（解锁进主界面才显示）。
+        "locked": locked,
     }
     with _notify_cache_lock:
         _notify_cache.update(at=time.time(), serial=serial, state=state)

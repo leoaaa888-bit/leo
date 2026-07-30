@@ -997,7 +997,9 @@
             /* 导航悬浮球：只有 OPPO 显示。默认停在底部正中——
                球宽 48px，所以左偏移取 calc(50% - 24px) 才是真正居中；
                底部再让开 iPhone 的 home 指示条(safe-area)，免得被横条压住。 */
-            :root[data-device-model="PLS120"] .fab-nav {
+            /* 多一个 .device-unlocked 条件：解锁进到手机主界面后才显示。
+               锁屏时导航键没用，而且 OPPO 锁屏是黑的，徽标浮在黑屏上很突兀。 */
+            :root[data-device-model="PLS120"].device-unlocked .fab-nav {
                 display: grid;
                 place-items: center;
                 position: fixed;
@@ -2143,6 +2145,14 @@
 
         // 把 PIN 发到后端盲解锁（PIN 走请求体，不进 URL / 日志）。
         // quiet=true 时不提示“正在解锁/已解锁”（自动解锁用），但失败仍提示。
+        // 手机是否已解锁。超人球只在解锁进主界面后才显示——锁屏时那几个导航键
+        // 本来也没用，而且 OPPO 锁屏是黑的，一个徽标浮在黑屏上很突兀。
+        // 不额外轮询锁屏状态（那要多一次 dumpsys trust，约 180ms/次），
+        // 改为复用已有信号：/api/wake 的 locked、解锁接口的结果、以及盖回伪装页。
+        function setDeviceUnlocked(on) {
+            document.documentElement.classList.toggle('device-unlocked', !!on);
+        }
+
         // 返回 Promise<boolean>：调用方（如 PIN 弹框）据此决定是否关闭。
         function sendUnlock(pin, quiet) {
             if (!quiet) {
@@ -2157,8 +2167,10 @@
                 .then((d) => {
                     if (d && d.ok) {
                         if (!quiet) { showKeyboardHint('已解锁'); }
+                        setDeviceUnlocked(true);   // 进主界面了，超人球可以出来
                         return true;
                     }
+                    setDeviceUnlocked(false);
                     if (d && d.error === 'invalid-pin') {
                         showKeyboardHint('PIN 格式不对（4–16 位数字）');
                     } else {
@@ -2186,6 +2198,7 @@
             fetch('/api/wake?ts=' + Date.now(), { cache: 'no-store' })
                 .then((r) => (r.ok ? r.json() : null))
                 .then((d) => {
+                    if (d) { setDeviceUnlocked(d.locked === false); }
                     if (d && d.locked && isTargetDevice) {
                         showPinPrompt();
                     }
@@ -5058,6 +5071,8 @@
             gateUnlocked = false;
             // 下次再进来时要重新补一次唤醒。
             wakeOnFirstFrameDone = false;
+            // 手机睡着了 = 又锁上了，超人球收起来，等下次解锁进主界面再出现。
+            setDeviceUnlocked(false);
             offlineGate.classList.remove('is-gone');
         }
         document.addEventListener('visibilitychange', () => {
@@ -5091,6 +5106,13 @@
                     }
                     // 服务端已把“在前台的 App”排除掉，所以打开对应 App 就会自动熄灭。
                     applyNotifyAlert(!!d.alert);
+
+                    // 超人导航球：解锁进主界面才显示，锁屏时收起。
+                    // 用轮询带回的真实锁屏状态驱动，桌面/移动都适用（相比之前放在
+                    // 只对移动端生效的 relockGate 里，桌面端锁屏时球一直不收的问题）。
+                    // locked 为 null（老服务端没返回）时不动，避免误收起。
+                    if (d.locked === true) { setDeviceUnlocked(false); }
+                    else if (d.locked === false) { setDeviceUnlocked(true); }
 
                     // 手机睡着了（息屏）→ 盖回伪装页，这样随时可以点三下唤醒进 PIN。
                     // 只看“是否睡着”，不看“是否锁定”：正在输 PIN 时手机是醒着的，
