@@ -217,10 +217,12 @@ _NOTIFY_SHELL = (
 # 轻量缓存：多端/多次轮询时避免频繁执行 dumpsys（约几百毫秒）。
 # 缓存键带上 packages——这个函数现在有两种调用方式（悬浮球跑马灯不过滤包名、
 # Telegram 提醒循环仍然只看 NOTIFY_TARGET_PACKAGES 那几个），键不区分的话，
-# 两边共用同一个 2.5s 缓存会互相读到对方过滤范围算出来的结果。
+# 两边共用同一份缓存会互相读到对方过滤范围算出来的结果。
+# TTL 要比网页轮询间隔（NOTIFY_POLL_MS，见 index.html）短，否则轮询间隔缩短了
+# 也只是更频繁地命中同一份旧缓存，拿不到更新鲜的数据，等于白缩短。
 _notify_cache = {"key": None, "state": None, "at": 0.0}
 _notify_cache_lock = Lock()
-_NOTIFY_CACHE_TTL_S = 2.5
+_NOTIFY_CACHE_TTL_S = 1.0
 
 
 def _parse_foreground_package(line):
@@ -297,9 +299,18 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
                 awake = line == "true"   # deviceidle get screen：屏幕是否亮着
         elif section == "nt" and line.startswith("NotificationRecord("):
             m = re.search(r"pkg=(\S+)", line)
-            if not m or (target_set is not None and m.group(1) not in target_set):
+            if not m:
                 continue
             pkg = m.group(1)
+            # pkg=android 是安卓系统自己发的通知（联网状态提示之类的，uid=1000），
+            # 不属于任何一个有桌面图标的 App——用户的要求是"图标带角标的才提醒"，
+            # 系统本身没有图标，这类通知永远不该点亮跑马灯。之前放开包名限制时
+            # 把这个也放了进来（NETWORK_STATUS 那条不带任何会被跳过的标志位），
+            # 导致手机没有任何消息时跑马灯照样误亮。
+            if pkg == "android":
+                continue
+            if target_set is not None and pkg not in target_set:
+                continue
             imp_m = re.search(r"importance=(-?\d+)", line)
             importance = int(imp_m.group(1)) if imp_m else 3
             if importance <= 0:

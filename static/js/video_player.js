@@ -268,6 +268,7 @@ class H264CanvasPlayer {
                 output: (frame) => this._onFrame(frame),
                 error: (err) => {
                     console.error('VideoDecoder error:', err);
+                    H264CanvasPlayer._lifecycle('decoder-error', { message: String(err && err.message || err) });
                     this.waitingForKey = true;
                     this.configured = false;
                     // Recreate decoder from last SPS/PPS so we are not permanently wedged.
@@ -287,6 +288,7 @@ class H264CanvasPlayer {
                     }
                 },
             });
+            H264CanvasPlayer._lifecycle('decoder-created');
             this.decoder.configure({
                 codec,
                 description: avc.description,
@@ -294,20 +296,35 @@ class H264CanvasPlayer {
             });
             this.configured = true;
             console.log('WebCodecs VideoDecoder configured', codec);
+            H264CanvasPlayer._lifecycle('decoder-configured', { codec });
             this._syncDisplaySize();
             return true;
         } catch (err) {
             console.error('VideoDecoder configure failed:', err);
+            H264CanvasPlayer._lifecycle('decoder-configure-failed', { message: String(err && err.message || err) });
             return false;
         }
     }
 
+    // 排查"卡在正在连接设备"专用：把生命周期各阶段第一次到达的时间点发到
+    // 服务端日志，不用再依赖用户开 F12。找不到全局 logLifecycle（比如脱离
+    // index.html 单独跑这个文件）时安静跳过，不影响正常播放。
+    static _lifecycle(stage, extra) {
+        try {
+            if (typeof logLifecycle === 'function') {
+                logLifecycle(stage, extra);
+            }
+        } catch (e) {}
+    }
+
     _onFrame(frame) {
+        H264CanvasPlayer._lifecycle('first-frame-decoded');
         try {
             const w = frame.displayWidth || frame.codedWidth;
             const h = frame.displayHeight || frame.codedHeight;
             this._setBitmapSize(w, h);
             this.ctx.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height);
+            H264CanvasPlayer._lifecycle('first-frame-presented');
             if (typeof this.onFramePresented === 'function') {
                 try { this.onFramePresented(this._lastDecodeSentAt); } catch (e) {}
             }

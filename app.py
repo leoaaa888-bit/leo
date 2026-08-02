@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
+import logging.handlers
 import struct
 import time
 import uuid
@@ -47,6 +49,27 @@ import telegram_notify
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
+
+# —— 生命周期调试日志：单独存一份、每天自动轮换、只留最近这一天 ——
+# 控制面板那份 logs/<serial>.log 是父进程重定向的整个服务 stdout，那个文件在
+# 服务运行期间被子进程（也就是本进程）持续写入，父进程没法安全地在旁边把它
+# 截断——truncate 一个另一个进程正开着写的文件，Windows 下容易和子进程的写
+# 入互相打架。这份 video-lifecycle 调试日志是本进程自己直接管理的独立文件，
+# 不存在这个问题，可以放心用标准库的按天轮换：TimedRotatingFileHandler
+# 每天午夜切一个新文件，backupCount=1 表示只额外保留前一天那一份，
+# 更早的自动删除——相当于"日志只保留最近一天左右"，不会无限堆积。
+_LOG_DIR = BASE_DIR / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+_lifecycle_logger = logging.getLogger("video_lifecycle")
+_lifecycle_logger.setLevel(logging.INFO)
+_lifecycle_logger.propagate = False  # 不重复丢进 root logger／控制台，print() 那份够看现场了
+if not _lifecycle_logger.handlers:
+    _lifecycle_handler = logging.handlers.TimedRotatingFileHandler(
+        str(_LOG_DIR / "video-lifecycle.log"),
+        when="D", interval=1, backupCount=1, encoding="utf-8",
+    )
+    _lifecycle_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _lifecycle_logger.addHandler(_lifecycle_handler)
 
 video_bit_rate = "2500000"
 max_size = "800"
@@ -514,6 +537,30 @@ async def api_click_debug(request: Request):
             d.get("verdict"), d.get("deviceX"), d.get("deviceY"),
         )
     )
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/video-lifecycle")
+async def api_video_lifecycle(request: Request):
+    """排查"正在连接设备卡住不动，刷新才恢复"专用：网页把视频生命周期每个
+    阶段第一次到达的时间点（ws-connected/media-connected/decoder-created/
+    decoder-configured/first-sps/first-pps/first-idr/first-frame-decoded/
+    first-frame-presented/hide-loader，以及 decoder-error/decoder-configure-failed
+    这类异常）发到这里直接打印进服务端日志——不用逼用户开 F12。
+    网页那边只在 Debug 模式（?lifecycleDebug=1）才会调用这个接口，正式使用
+    时前端根本不会发请求，这里不用再单独做一层开关。
+    诊断用完应该整段删掉，不是长期接口。"""
+    try:
+        d = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False})
+    session_id = d.get("sessionId") or "?"
+    line = "[Session:{}] +{}ms {}{}".format(
+        session_id, d.get("elapsedMs"), d.get("stage"),
+        f" extra={d.get('extra')}" if d.get("extra") else "",
+    )
+    print(line)             # 控制面板日志框实时能看到的那份（不落盘保留）
+    _lifecycle_logger.info(line)   # 单独落盘，按天轮换、只留最近一天
     return JSONResponse({"ok": True})
 
 

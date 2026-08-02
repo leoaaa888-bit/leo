@@ -1830,10 +1830,10 @@
     <script src="/static/js/input.js?v=31"></script>
     <script src="/static/js/exp-golomb.js?v=21"></script>
     <script src="/static/js/h264-sps-parser.js?v=22"></script>
-    <script src="/static/js/video_parser.js?v=23"></script>
+    <script src="/static/js/video_parser.js?v=24"></script>
     <script src="/static/js/audio_parser.js?v=30"></script>
     <script src="/static/js/audio_player.js?v=42"></script>
-    <script src="/static/js/video_player.js?v=26"></script>
+    <script src="/static/js/video_player.js?v=27"></script>
 </head>
 
 <body>
@@ -2751,6 +2751,74 @@
         const loaderTitle = document.getElementById('loader-title');
         const loaderSub = document.getElementById('loader-sub');
         let screenReady = false;
+
+        // —— 视频生命周期日志：排查"正在连接设备卡住不动，刷新才恢复"专用 ——
+        // 只在服务端 console.log/浏览器控制台都能看到，不用逼用户开 F12。
+        // 每个阶段只记第一次（用 Set 去重），并附带距离本次连接发起的毫秒数，
+        // 这样卡在哪一步、卡了多久，一眼就能看出来，不用靠猜。
+        // 顺序应为：ws-connected → media-connected → decoder-created →
+        // decoder-configured → first-sps → first-pps → first-idr →
+        // first-frame-decoded → first-frame-presented → hide-loader。
+        // 如果日志停在某一步之后不再往下走，问题就出在那一步和下一步之间。
+        //
+        // 只在 Debug 模式下才输出/上报，正式模式一次请求都不发——用
+        // ?lifecycleDebug=1 打开一次，会记进 localStorage 持续生效（不用每次
+        // 都带参数）；?lifecycleDebug=0 关掉。默认关，不影响正常使用时的网络
+        // 请求量。
+        const LIFECYCLE_DEBUG = (() => {
+            try {
+                const params = new URLSearchParams(location.search);
+                if (params.has('lifecycleDebug')) {
+                    const on = params.get('lifecycleDebug') !== '0';
+                    localStorage.setItem('lifecycleDebug', on ? '1' : '0');
+                    return on;
+                }
+                return localStorage.getItem('lifecycleDebug') === '1';
+            } catch (e) {
+                return false;
+            }
+        })();
+
+        // 每次新连接生成一个短会话 ID，日志里带上它——同一页面反复重连/切画质
+        // 时，能分清哪几条日志属于同一次连接，不会和上一次的日志混在一起看混。
+        function _genLifecycleSessionId() {
+            const bytes = new Uint8Array(4);
+            if (window.crypto && crypto.getRandomValues) {
+                crypto.getRandomValues(bytes);
+            } else {
+                for (let i = 0; i < 4; i++) { bytes[i] = Math.floor(Math.random() * 256); }
+            }
+            return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+        }
+
+        const _lifecycleSeen = new Set();
+        let _lifecycleStartedAt = 0;
+        let _lifecycleSessionId = null;
+        function resetLifecycleLog() {
+            _lifecycleSeen.clear();
+            _lifecycleStartedAt = Date.now();
+            _lifecycleSessionId = _genLifecycleSessionId();
+        }
+        function logLifecycle(stage, extra) {
+            if (!LIFECYCLE_DEBUG) {
+                return;
+            }
+            if (_lifecycleSeen.has(stage)) {
+                return;
+            }
+            _lifecycleSeen.add(stage);
+            const elapsedMs = Date.now() - (_lifecycleStartedAt || Date.now());
+            console.log(`[Session:${_lifecycleSessionId}] +${elapsedMs}ms ${stage}`, extra || '');
+            fetch('/api/video-lifecycle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sessionId: _lifecycleSessionId, stage, elapsedMs, extra: extra || null,
+                }),
+                keepalive: true,
+            }).catch(() => {});
+        }
+
         fallbackVideo.muted = true;
         audioElement.volume = 1;
         try { audioElement.setAttribute('playsinline', ''); } catch (e) {}
@@ -2793,6 +2861,7 @@
             if (screenReady) {
                 return;
             }
+            logLifecycle('hide-loader');
             screenReady = true;
             if (screenLoader) {
                 screenLoader.classList.add('is-hidden');
@@ -3501,8 +3570,12 @@
             if (fabTools && appRoot) {
                 // 换了默认位置（右侧边缘居中），把旧的拖动记录一次性作废：
                 // 换 key 即可让老浏览器回到新默认，之后拖动照常记住。
-                const FAB_POS_KEY = 'fabToolsPos2';
+                // fabToolsPos2 是这次要作废的那一版——之前调试悬浮球点击方案时
+                // 把球拖来拖去，那次的拖动记录被记住了，一直卡在旧位置，强刷新
+                // 也刷不掉（localStorage 不受页面刷新影响），只能靠换 key 清掉。
+                const FAB_POS_KEY = 'fabToolsPos3';
                 try { localStorage.removeItem('fabToolsPos'); } catch (e) {}
+                try { localStorage.removeItem('fabToolsPos2'); } catch (e) {}
                 const fabPanel = document.querySelector('.topbar');
                 const FAB_MARGIN = 8;
 
@@ -4166,6 +4239,12 @@
                 if (input) {
                     input.resizeScreen(data.width, data.height);
                 }
+            } else if (type === 'sps-seen') {
+                logLifecycle('first-sps', data);
+            } else if (type === 'pps-seen') {
+                logLifecycle('first-pps', data);
+            } else if (type === 'idr-seen') {
+                logLifecycle('first-idr', data);
             }
         });
 
@@ -4582,6 +4661,10 @@
         })();
 
         function markFramePresented() {
+            // 兜底：WebCodecs 路径已经在 video_player.js 的 _onFrame 里记过一次，
+            // 这里重复调用会被去重；MSE 兜底路径（<video> 的 timeupdate/playing）
+            // 不经过 video_player.js，全靠这里才能记到"首帧已呈现"。
+            logLifecycle('first-frame-presented');
             lastPresentedAt = Date.now();
             reconnectAttempt = 0;
             // 新画面已出，切换画质完成，清除“安静切换”标志。
@@ -5033,6 +5116,7 @@
             if (isSocketBusy(mediaWs)) {
                 return;
             }
+            resetLifecycleLog();
             const connGen = connectionGeneration;
             if (quietSwitch) {
                 // 切换画质：保留最后一帧，只在状态芯片提示，不弹黑色加载页。
@@ -5058,6 +5142,7 @@
                 if (mediaWs !== ws || !isCurrentConnection(connGen)) {
                     return;
                 }
+                logLifecycle('ws-connected');
                 mediaConnected = true;
                 mediaConnectStartedAt = 0;
                 reconnecting = false;
@@ -5093,6 +5178,7 @@
                         return;
                     }
                     if (msg.type === 'session') {
+                        logLifecycle('media-connected');
                         sessionToken = msg.token;
                         openControlSocket(sessionToken, connGen);
                         if (canvasPlayer) {
@@ -5304,8 +5390,12 @@
             }
         });
 
-        // —— 消息通知红点：QQ / 微信 / Soul 有新消息时悬浮球变红 ——
-        const NOTIFY_POLL_MS = 5000;
+        // —— 消息通知红点：任意 App 有新消息时悬浮球跑马灯亮 ——
+        // adb/dumpsys 拉取式轮询，手机端没有装无障碍/通知监听服务去主动推送，
+        // 做不到真正的系统级即时推送；把轮询间隔缩短到 1.2s（原来 5s），
+        // 配合服务端缓存 TTL 一起调短（见 scrcpy.py 的 _NOTIFY_CACHE_TTL_S），
+        // 让"缩短轮询间隔"真的换来更新鲜的数据，而不是命中同一份旧缓存。
+        const NOTIFY_POLL_MS = 1200;
         let notifyTimer = null;
         // 不做锁存：直接跟随服务端的判断。
         // 曾经用一个“未读锁存集合”防漏消息，但它唯一的清除途径是“打开那个 App”，

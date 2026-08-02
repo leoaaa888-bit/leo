@@ -222,6 +222,11 @@ class VideoParser {
             if (this.debug) {
                 console.log("I frame", nalu.length);
             }
+            // 生命周期排查用：网络层面是否真的收到过关键帧，跟"收到了但解码器
+            // 没吐出画面"是两码事，两者要分得清才知道卡在传输还是卡在解码。
+            if (this.onNaluCallback) {
+                this.onNaluCallback({ type: 'idr-seen', data: { size: nalu.length } });
+            }
         } else if (nalu_type === 7) {
             if (this.isAvccNalu(nalu)) {
                 this.sps = nalu;
@@ -236,6 +241,9 @@ class VideoParser {
             }
             const sps = this.sps;
             if (sps && sps.length > 4) {
+                if (this.onNaluCallback) {
+                    this.onNaluCallback({ type: 'sps-seen', data: { size: sps.length } });
+                }
                 let ret = SPSParser.parseSPS(this.spsPayload(sps));
                 if (this.onNaluCallback) {
                     this.onNaluCallback({
@@ -256,6 +264,9 @@ class VideoParser {
                 } else {
                     this.pps = nalu;
                 }
+            }
+            if (this.pps && this.pps.length > 4 && this.onNaluCallback) {
+                this.onNaluCallback({ type: 'pps-seen', data: { size: this.pps.length } });
             }
             return;
         } else if (this.debug) {
