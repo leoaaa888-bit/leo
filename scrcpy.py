@@ -161,6 +161,42 @@ def trigger_device_screenshot(device_serial=None):
 # 打开对应 App（切到前台）后熄灭。
 NOTIFY_TARGET_PACKAGES = ("com.tencent.mm", "com.tencent.mobileqq", "cn.soulapp.android")
 
+# 系统本身发的通知——这些包在桌面上没有图标，谈不上"角标"，不管标志位是
+# 什么样都不该点亮跑马灯。实测遇到过 android（联网状态提示）、
+# com.android.systemui（状态栏/快捷设置）、com.google.android.gms（备份
+# 提醒）、com.google.android.permissioncontroller（权限自动回收提醒）——
+# 一个个把撞见的系统包名加进白名单治标不治本，后面还会不断冒出新的。
+# 换成现查"这个包在桌面上到底有没有图标"（见 _package_has_launcher_icon），
+# 不管是哪个系统包，只要没有 LAUNCHER 入口就一律不算，一次性解决整类问题。
+_pkg_has_launcher_cache = {}
+
+
+def _package_has_launcher_icon(pkg, serial):
+    """这个包有没有声明 LAUNCHER 入口（也就是桌面上有没有图标）。没有图标的
+    包不管发什么通知都不该点亮跑马灯——用户的要求是"图标带角标的软件才
+    提醒"，连图标都没有的包天然不满足这个前提。按 (serial, pkg) 缓存：
+    同一个包在服务运行期间基本不会变来变去（除非中途被更新/卸载重装），
+    用不着每次轮询都重新查一遍，实测每次查询要经过一次 adb 往返。"""
+    key = (serial, pkg)
+    cached = _pkg_has_launcher_cache.get(key)
+    if cached is not None:
+        return cached
+    try:
+        r = _run(
+            adb_cmd("shell",
+                    f"cmd package resolve-activity --brief -c android.intent.category.LAUNCHER {pkg}",
+                    device_serial=serial),
+            capture_output=True, text=True, timeout=4,
+        )
+        lines = (r.stdout or "").strip().splitlines()
+        # 有图标：最后一行是 "包名/Activity" 这种形式；没有：输出是
+        # "No activity found" 一类提示，不含 "/"。
+        has_icon = bool(lines) and "/" in lines[-1]
+    except Exception:
+        has_icon = True  # 查不出来就保守当作"有图标"，不误伤真正的消息类 App
+    _pkg_has_launcher_cache[key] = has_icon
+    return has_icon
+
 # 视为“不是真实消息”的通知标志位，一律跳过，避免悬浮球无消息也亮着：
 #   ONGOING / NO_CLEAR / FGSRV —— 常驻或前台服务通知（如“微信运行中”）
 #   GROUP_SUMMARY / AUTOGROUP_SUMMARY —— Android 自动分组产生的“摘要头”，
@@ -187,8 +223,16 @@ _NOTIFY_SKIP_TOKENS = (
 
 
 def _notification_skip(line):
-    """这条通知是不是“不该点亮悬浮球”的那种（常驻通知、或自动分组的摘要头）。
-    dumpsys 在不同版本上把 flags 打成十六进制或符号名，两种都要认。"""
+    """这条通知是不是“不该点亮悬浮球”的那种（常驻通知、自动分组的摘要头，
+    或 Android 自己标记的系统类通知）。dumpsys 在不同版本上把 flags 打成
+    十六进制或符号名，两种都要认。"""
+    # category=sys 是 Android 自带的 CATEGORY_SYSTEM——系统状态类通知专用的
+    # 标记，和标志位（flags）是两回事：实测 com.android.systemui 那条
+    # flags=0（标志位这道闸门完全拦不住），但 category=sys 一眼就能认出来，
+    # 不需要为每一个可能出现的系统包单独加判断。
+    cat_m = re.search(r"category=(\S+?)(?=\s|\))", line)
+    if cat_m and cat_m.group(1) == "sys":
+        return True
     # 用 [^\s)]+ 而不是 \S+：flags 若正好在行尾，\S+ 会把后面的 "))" 一起吞掉，
     # 导致十六进制形式匹配不上而漏判。
     m = re.search(r"flags=([^\s)]+)", line)
@@ -211,7 +255,11 @@ def _notification_skip(line):
 _NOTIFY_SHELL = (
     "echo @@FG@@; dumpsys window | grep -E 'mCurrentFocus|mIsShowing='; "
     "echo @@PW@@; dumpsys deviceidle get screen; "
-    "echo @@NT@@; dumpsys notification --noredact | grep 'NotificationRecord('"
+    # 多取每条通知记录里的 mCreationTimeMs：同一个 App 的同一条通知（比如微信
+    # 一直在更新同一条）每次被重新发布，这个时间戳都会变，网页靠它判断
+    # "又来了一条新消息"，而不只是"还有未读"。它在记录块的末尾，和
+    # NotificationRecord( 那一行按顺序配对（见下面 pending_id 的处理）。
+    "echo @@NT@@; dumpsys notification --noredact | grep -E 'NotificationRecord\\(|mCreationTimeMs='"
 )
 
 # 轻量缓存：多端/多次轮询时避免频繁执行 dumpsys（约几百毫秒）。
@@ -276,6 +324,9 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
     section = None
     foreground = None
     alerting = []
+    items = []          # 每条被接受的通知：{pkg, id}，id 就是 dumpsys 里的 key=
+    stamps = {}         # id -> mCreationTimeMs
+    pending_id = None
     awake = None
     locked = None
     for raw in (result.stdout or "").splitlines():
@@ -297,19 +348,28 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
         elif section == "pw":
             if line in ("true", "false"):
                 awake = line == "true"   # deviceidle get screen：屏幕是否亮着
+        elif section == "nt" and line.startswith("mCreationTimeMs="):
+            # 记录块末尾的时间戳，归属于上一条"被接受"的通知；上一条被过滤掉了
+            # （pending_id 为 None）就直接忽略，不会错配给别的记录。
+            if pending_id is not None:
+                try:
+                    stamps[pending_id] = int(line.split("=", 1)[1])
+                except ValueError:
+                    pass
+                pending_id = None
         elif section == "nt" and line.startswith("NotificationRecord("):
+            pending_id = None
             m = re.search(r"pkg=(\S+)", line)
             if not m:
                 continue
             pkg = m.group(1)
-            # pkg=android 是安卓系统自己发的通知（联网状态提示之类的，uid=1000），
-            # 不属于任何一个有桌面图标的 App——用户的要求是"图标带角标的才提醒"，
-            # 系统本身没有图标，这类通知永远不该点亮跑马灯。之前放开包名限制时
-            # 把这个也放了进来（NETWORK_STATUS 那条不带任何会被跳过的标志位），
-            # 导致手机没有任何消息时跑马灯照样误亮。
-            if pkg == "android":
-                continue
-            if target_set is not None and pkg not in target_set:
+            if target_set is not None:
+                if pkg not in target_set:
+                    continue
+            elif not _package_has_launcher_icon(pkg, serial):
+                # 通用模式（不限包名）才需要现查图标——Telegram 提醒那条路径的
+                # target_set 本来就是固定的三个真实 App，没有这个问题，不用
+                # 为它们多打一次 adb。
                 continue
             imp_m = re.search(r"importance=(-?\d+)", line)
             importance = int(imp_m.group(1)) if imp_m else 3
@@ -321,13 +381,28 @@ def get_notification_state(device_serial=None, packages=NOTIFY_TARGET_PACKAGES):
                 continue  # 常驻通知 或 自动分组的摘要头，都不算真实消息
             if pkg not in alerting:
                 alerting.append(pkg)
+            key_m = re.search(r"\bkey=(\S+)", line)
+            if key_m:
+                # 记录行里 key=… 后面紧跟 ":"（"…|10100: Notification("），去掉。
+                pending_id = key_m.group(1).rstrip(":")
+                items.append({"pkg": pkg, "id": pending_id})
 
     # 打开哪个 App（切到前台）就熄灭哪个的红点。
     active = [p for p in alerting if p != foreground]
+    # 每条通知带上自己的时间戳（取不到就是 None，比如老系统没有这个字段）。
+    # 弹窗不按前台 App 过滤：不管手机锁屏还是解锁、App 在不在前台，只要有新通知
+    # 就提醒。（跑马灯 packages 仍然排除前台 App，那是红点逻辑，和弹窗无关。）
+    out_items = [
+        {"pkg": it["pkg"], "id": it["id"], "ts": stamps.get(it["id"])}
+        for it in items
+    ]
     state = {
         "ok": True,
         "alert": len(active) > 0,
         "packages": active,
+        # 电脑版弹窗用：逐条通知（id + 时间戳），网页比对前后两次的差异判断
+        # 有没有新消息。不含任何标题/正文，弹窗文案是固定的，不需要读消息内容。
+        "items": out_items,
         "foreground": foreground,
         # 供网页判断是否该盖回伪装页（手机睡着时盖回，方便点三下唤醒进 PIN）。
         "awake": awake,
@@ -749,11 +824,21 @@ def _detect_secure_input_strategy(key, serial):
     return _KeyEventStrategy()
 
 
-def send_key(key, device_serial=None):
+def send_key(key, device_serial=None, strategy_hint=None):
     """Secure Input Engine 的统一入口：数字 0-9 / del / enter。调用方（/api/secure-key、
     进而前端 JS）不需要知道这一下到底是 KeyEvent 还是坐标点击——由探测链
     （_PROBES）现场判断界面类型后自动选择。不打印 key 的值——连续调用的
-    序列本身就是 PIN，日志里不该留下任何一位。"""
+    序列本身就是 PIN，日志里不该留下任何一位。
+
+    strategy_hint："keyevent" 时跳过探测链，直接走 KeyEvent——专给"锁屏自动
+    解锁"这条路用：调用方（driveSecureInput/secureInputSubmit 的 lock 模式）
+    在喊这个函数之前，已经靠 /api/wake 的 locked 字段独立确认过这就是锁屏，
+    没必要每一位都重新探测一次界面类型。实测过：探测一次约 230-250ms，
+    6 位密码+回车的完整序列因此多花 2 秒以上——锁屏解锁这几秒的差距很容易
+    让手机在解锁完成前就又重新息屏/锁上（实测锁屏后约 10 秒左右会自动再
+    休眠），变成“要刷新好几次网页才能进去”。跳过之后单次约 130ms，
+    7 位总共省下 2 秒多。"generic" 模式（微信锁/支付宝锁等，事先不知道是
+    什么界面）不传这个参数，继续走原来的探测链，行为不变。"""
     serial = resolve_device_serial(device_serial)
     if not serial:
         return {"ok": False, "error": "no-device"}
@@ -761,7 +846,10 @@ def send_key(key, device_serial=None):
     if key not in _SECURE_KEY_CODES:
         return {"ok": False, "error": "invalid-key"}
     try:
-        strategy = _detect_secure_input_strategy(key, serial)
+        if strategy_hint == "keyevent":
+            strategy = _KeyEventStrategy()
+        else:
+            strategy = _detect_secure_input_strategy(key, serial)
         result = strategy.send(key, serial)
         if not result.get("ok"):
             print(f"send_key: {strategy.name} strategy failed: {result.get('error')}")

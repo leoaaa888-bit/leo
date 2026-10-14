@@ -51,6 +51,8 @@ def base_dir() -> str:
 BASE_DIR = base_dir()
 ADB_PATH = os.path.join(BASE_DIR, "adb.exe")
 APP_PATH = os.path.join(BASE_DIR, "app.py")
+# 额外开启 HTTPS 端口的设备（目前仅 OPPO）
+HTTPS_PORTS = {"3L1G1UE6JV4EHWDH": 5443}
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 PORT_MAP_FILE = os.path.join(BASE_DIR, "port_map.json")
 
@@ -683,6 +685,9 @@ class ControlPanel:
             "--no-turn_screen_off",
             "--no-auto_lock",
         ]
+        if serial in HTTPS_PORTS:
+            # 电脑版浏览器弹窗（Safari）需要 HTTPS；HTTP 端口保持不变
+            cmd += ["--https_port", str(HTTPS_PORTS[serial])]
         try:
             proc = subprocess.Popen(
                 cmd, cwd=BASE_DIR, stdout=logf, stderr=subprocess.STDOUT,

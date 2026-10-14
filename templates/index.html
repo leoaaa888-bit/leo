@@ -1703,6 +1703,8 @@
             flex: 1;
         }
 
+        .diag-unlock .diag-btn[hidden] { display: none; }
+
         /* —— 粘贴到手机 —— */
         .diag-paste {
             display: flex;
@@ -1827,7 +1829,7 @@
             color: var(--text);
         }
     </style>
-    <script src="/static/js/input.js?v=31"></script>
+    <script src="/static/js/input.js?v=32"></script>
     <script src="/static/js/exp-golomb.js?v=21"></script>
     <script src="/static/js/h264-sps-parser.js?v=22"></script>
     <script src="/static/js/video_parser.js?v=24"></script>
@@ -2085,6 +2087,8 @@
                  秘密相册、银行 App 等所有黑屏数字密码界面，不针对某个 App 单独开发。 -->
             <div class="diag-unlock">
                 <button type="button" id="diag-secure-input" class="diag-btn diag-copy">🔒 数字密码键盘</button>
+                <!-- 电脑版 OPPO 才显示（见 whoami 回调）：不用等真实消息，直接验证通知权限/放行是否生效 -->
+                <button type="button" id="diag-notify-test" class="diag-btn diag-copy" hidden>🔔 测试消息弹窗</button>
             </div>
 
             <!-- 粘贴到手机：手机端（iPhone）没有本机键盘映射通路，靠这里把文字送过去。
@@ -2244,11 +2248,18 @@
         // 而并发的 fetch 请求完成顺序不保证和发出顺序一致，所以这里强制排队，
         // 而不是每次点击各发各的。
         let _secureKeyQueue = Promise.resolve();
-        function sendSecureKey(key) {
+        // hint 传 'keyevent'：调用方已经确定这就是锁屏（比如 /api/wake 的
+        // locked 字段查过了），跳过后端的界面探测直接发 KeyEvent——实测探测
+        // 一次约 230-250ms，6 位密码+回车的完整序列因此能多花 2 秒以上，
+        // 手机锁屏后约 10 秒左右会自动再休眠，这几秒的差距很容易让解锁序列
+        // 还没敲完手机就又睡回去，表现为"要刷新好几次网页才能进去"。
+        // 不传（微信锁/支付宝锁等 generic 场景，事先不知道是什么界面）就
+        // 维持原来的探测链，行为不变。
+        function sendSecureKey(key, hint) {
             const run = () => fetch('/api/secure-key', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key: key }),
+                body: JSON.stringify(hint ? { key: key, strategy_hint: hint } : { key: key }),
             }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
             const p = _secureKeyQueue.then(run);
             _secureKeyQueue = p.catch(() => {});
@@ -2257,13 +2268,16 @@
 
         // 自动逐位敲键盘（记住的 PIN 自动解锁用）：数字间留一点间隔，让设备端
         // 按顺序收到——这就是“自动帮你点了一遍键盘”，不是另一套批量提交逻辑。
+        // 这条路径只会在 wakeOrUnlock() 已经确认 locked===true 时才会被调用，
+        // 所以直接传 'keyevent' 跳过探测，不用等 secureInput.mode（这条路径
+        // 根本不经过那个状态，全程不显示键盘 UI）。
         async function driveSecureInput(pin, quiet) {
             if (!quiet) { showKeyboardHint('正在解锁…'); }
             for (const ch of String(pin)) {
-                await sendSecureKey(ch);
+                await sendSecureKey(ch, 'keyevent');
                 await new Promise((r) => setTimeout(r, 120));
             }
-            await sendSecureKey('enter');
+            await sendSecureKey('enter', 'keyevent');
             await new Promise((r) => setTimeout(r, 500));
             fetch('/api/wake?ts=' + Date.now(), { cache: 'no-store' })
                 .then((r) => (r.ok ? r.json() : null))
@@ -2332,18 +2346,26 @@
             }
         }
 
+        // secureInput.mode 是 'lock' 时，这个键盘正对着锁屏——已经靠
+        // wakeOrUnlock() 的 locked 字段确认过了，不用再让后端每一位都重新
+        // 探测一遍界面类型（省下来的时间见 sendSecureKey 定义处的注释）。
+        // 'generic' 模式（微信锁/支付宝锁等）事先不知道是什么界面，不传。
+        function currentSecureModeHint() {
+            return secureInput.mode === 'lock' ? 'keyevent' : undefined;
+        }
+
         // 把已经打到设备上的位数一起清掉，否则网页这边清零了、手机那边还留着，
         // 下次再点数字键两边就对不上了。Clear 按钮和退出前的兜底清理都走这里。
         function secureInputClearDevice() {
             while (secureInput.digits.length > 0) {
                 secureInput.digits.pop();
-                sendSecureKey('del');
+                sendSecureKey('del', currentSecureModeHint());
             }
             secureInputRenderDots();
         }
 
         function secureInputSubmit() {
-            sendSecureKey('enter');
+            sendSecureKey('enter', currentSecureModeHint());
             const remember = document.getElementById('pin-gate-remember');
             if (secureInput.mode === 'lock' && remember) {
                 const pin = secureInput.digits.join('');
@@ -2451,11 +2473,11 @@
                         if (key === 'del') {
                             if (secureInput.digits.length === 0) { return; }
                             secureInput.digits.pop();
-                            sendSecureKey('del');
+                            sendSecureKey('del', currentSecureModeHint());
                         } else {
                             if (secureInput.digits.length >= 16) { return; }   // 安全上限
                             secureInput.digits.push(key);
-                            sendSecureKey(key);
+                            sendSecureKey(key, currentSecureModeHint());
                         }
                         secureInputRenderDots();
                         if (key !== 'del' && autoEnter && autoEnter.checked
@@ -2500,11 +2522,11 @@
                     if (key === 'del') {
                         if (secureInput.digits.length === 0) { return; }
                         secureInput.digits.pop();
-                        sendSecureKey('del');
+                        sendSecureKey('del', currentSecureModeHint());
                     } else {
                         if (secureInput.digits.length >= 16) { return; }
                         secureInput.digits.push(key);
-                        sendSecureKey(key);
+                        sendSecureKey(key, currentSecureModeHint());
                     }
                     secureInputRenderDots();
                     if (key !== 'del' && autoEnter && autoEnter.checked
@@ -4142,6 +4164,11 @@
             isTargetDevice = (deviceModel === TARGET_MODEL);
             if (isTargetDevice) {
                 applyOppoQuality();
+                if (isDesktopView) {
+                    startNotifyWorkerTicker();   // 电脑版弹窗的后台计时
+                    const nt = document.getElementById('diag-notify-test');
+                    if (nt) { nt.hidden = false; }   // 诊断面板里的"测试消息弹窗"
+                }
             }
             layoutDeviceFrame();   // 拿到设备后按机型重排一次
         }).catch(() => {});
@@ -4461,6 +4488,9 @@
                 + qualityConfig.video_bit_rate.slice(0, -6) + 'M) | 延迟 '
                 + (chipLatency ? chipLatency.textContent : '--'));
             lines.push('UA ' + navigator.userAgent);
+            if (desktopNotifyEnabled()) {
+                lines.push('消息弹窗 ' + desktopNotifyStatusText());
+            }
             lines.push('--- 事件（新→旧）---');
             if (!diagLog.length) {
                 lines.push('（暂无记录。发生重连或断开后会显示在这里。）');
@@ -4598,6 +4628,31 @@
             bindTapAction(document.getElementById('diag-secure-input'), () => {
                 hideDiagnostics();
                 showSecureInput({ mode: 'generic' });
+            });
+
+            // 测试消息弹窗：这一下点击本身就是浏览器要求的"用户操作"，权限还没
+            // 定的话在这里请求；已经允许就直接弹一条一模一样的。不关诊断面板，
+            // 这样能直接在面板里看到"消息弹窗 …"那行状态有没有变。
+            bindTapAction(document.getElementById('diag-notify-test'), () => {
+                const done = () => {
+                    renderDiagnostics();
+                    showKeyboardHint('消息弹窗：' + desktopNotifyStatusText());
+                };
+                if (typeof Notification === 'undefined' || !window.isSecureContext
+                        || Notification.permission === 'denied') {
+                    done();
+                    return;
+                }
+                notifyAsked = true;
+                if (Notification.permission === 'default') {
+                    requestNotifyPermissionOnce((p) => {
+                        if (p === 'granted') { showDesktopNotification(); }
+                        done();
+                    });
+                    return;
+                }
+                showDesktopNotification();
+                done();
             });
 
             // —— 粘贴到手机 ——
@@ -5407,8 +5462,131 @@
                 fab.classList.toggle('has-alert', !!on);
             }
         }
+        // —— 电脑版消息弹窗（目前只对 OPPO 开启）——
+        // 手机有新消息时，用浏览器的系统通知在桌面角落弹一条"Leo你有新的消息"，
+        // 文案固定，不读也不显示消息内容。只在电脑版（有鼠标）+ OPPO 页面生效，
+        // 手机版和谷歌2 的页面完全不受影响。
+        // 浏览器限制：只有 https 页面或被浏览器当作安全来源的地址才允许弹通知
+        // （Chrome 可在 chrome://flags 里放行 http 地址；Safari 没有这个开关，
+        // 只能用 https）。
+        const DESKTOP_NOTIFY_TEXT = 'Leo你有新的消息';
+        let notifySeen = new Map();
+        let notifyBaselineDone = false;
+        let notifyAsked = false;
+        let notifyWorker = null;
+
+        function desktopNotifyEnabled() {
+            return isDesktopView && isTargetDevice;
+        }
+
+        // 第一次点击/按键时请求通知权限（浏览器要求必须由用户操作触发）。
+        function askDesktopNotifyPermission() {
+            if (notifyAsked || !desktopNotifyEnabled()) {
+                return;
+            }
+            notifyAsked = true;
+            if (typeof Notification === 'undefined' || !window.isSecureContext) {
+                showKeyboardHint('当前地址不是浏览器认可的安全来源，无法弹出消息通知');
+                return;
+            }
+            if (Notification.permission === 'default') {
+                try {
+                    const r = Notification.requestPermission(function () {});
+                    if (r && typeof r.catch === 'function') { r.catch(function () {}); }
+                } catch (e) {}
+            }
+        }
+        ['pointerdown', 'keydown'].forEach((evt) => {
+            document.addEventListener(evt, askDesktopNotifyPermission, true);
+        });
+
+        // 当前这个页面能不能弹通知，用人话说清楚——诊断面板里显示，也给"测试
+        // 消息弹窗"按钮用，不用开 F12 就能看出是哪一步卡住。
+        function desktopNotifyStatusText() {
+            if (!desktopNotifyEnabled()) {
+                return '未启用（只有电脑版的 OPPO 页面才弹窗）';
+            }
+            if (typeof Notification === 'undefined' || !window.isSecureContext) {
+                return '不可用：当前地址不是安全来源（Chrome 需在 chrome://flags 放行这个地址，Safari 只能用 https）';
+            }
+            const p = Notification.permission;
+            if (p === 'granted') { return '已就绪（浏览器已允许通知）'; }
+            if (p === 'denied') { return '被浏览器拒绝（点地址栏左侧的图标 → 网站设置 → 通知 改为允许）'; }
+            return '待授权（点"测试消息弹窗"，在浏览器提示里选允许）';
+        }
+
+        // requestPermission 在不同浏览器里有的返回 Promise、有的走回调、
+        // 有的两个都触发，包一层保证只回调一次。
+        function requestNotifyPermissionOnce(done) {
+            let fired = false;
+            const cb = (p) => { if (!fired) { fired = true; done(p); } };
+            try {
+                const r = Notification.requestPermission(cb);
+                if (r && typeof r.then === 'function') { r.then(cb).catch(() => cb('denied')); }
+            } catch (e) {
+                cb('denied');
+            }
+        }
+
+        function showDesktopNotification() {
+            if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
+                return;
+            }
+            try {
+                // 同一个 tag：连着来几条也只留一条弹窗，不会堆满屏幕。
+                const n = new Notification(DESKTOP_NOTIFY_TEXT, { tag: 'web-scrcpy-msg', renotify: true });
+                n.onclick = function () {
+                    try { window.focus(); } catch (e) {}
+                    n.close();
+                };
+            } catch (e) {}
+        }
+
+        // 比对前后两次轮询的通知清单：出现了新的通知，或者同一条通知被重新
+        // 发布过（时间戳变了，比如微信一直在更新同一条），就算"来了新消息"。
+        // 第一次拿到清单只记基线、不弹——打开页面时本来就有的未读不该一下子弹出来。
+        function maybeDesktopPopup(d) {
+            if (!desktopNotifyEnabled() || !Array.isArray(d.items)) {
+                return;
+            }
+            const next = new Map(d.items.map((it) => [it.id, it.ts]));
+            if (!notifyBaselineDone) {
+                notifySeen = next;
+                notifyBaselineDone = true;
+                return;
+            }
+            let fresh = false;
+            next.forEach((ts, id) => {
+                if (!notifySeen.has(id) || notifySeen.get(id) !== ts) { fresh = true; }
+            });
+            notifySeen = next;
+            if (fresh) {
+                showDesktopNotification();
+            }
+        }
+
+        // 标签页切到后台后，主线程的 setInterval 会被浏览器越压越慢（挂久了
+        // 一分钟才跑一次），弹窗就晚了。Web Worker 里的计时器不受这个限制，
+        // 让它每个周期给主线程发一个消息，页面在后台时靠这个触发轮询。
+        function startNotifyWorkerTicker() {
+            if (notifyWorker) {
+                return;
+            }
+            try {
+                const src = 'setInterval(function(){postMessage(1)},' + NOTIFY_POLL_MS + ');';
+                notifyWorker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+                notifyWorker.onmessage = function () {
+                    if (document.hidden) { pollNotifications(); }
+                };
+            } catch (e) {
+                notifyWorker = null;
+            }
+        }
+
         function pollNotifications() {
-            if (document.hidden || !gateUnlocked || supersededYielded) {
+            // 电脑版 OPPO 要在后台也持续查（弹窗就是给"切到别的窗口"用的），
+            // 其它情况维持原样：页面隐藏时不查，避免无谓的 adb 占用。
+            if ((document.hidden && !desktopNotifyEnabled()) || !gateUnlocked || supersededYielded) {
                 return;  // 让出控制权期间不查通知，避免无谓的 adb 占用。
             }
             fetch('/api/notifications?ts=' + Date.now(), { cache: 'no-store' })
@@ -5419,6 +5597,7 @@
                     }
                     // 服务端已把“在前台的 App”排除掉，所以打开对应 App 就会自动熄灭。
                     applyNotifyAlert(!!d.alert);
+                    maybeDesktopPopup(d);
 
                     // 超人导航球：解锁进主界面才显示，锁屏时收起。
                     // 用轮询带回的真实锁屏状态驱动，桌面/移动都适用（相比之前放在

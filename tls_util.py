@@ -87,6 +87,21 @@ def get_local_ipv4_addresses() -> list[str]:
         probe.close()
     except OSError:
         pass
+    if sys.platform == "win32":
+        # Virtual NICs (Tailscale / ZeroTier) are missing from hostname lookup; read them from ipconfig.
+        try:
+            out = subprocess.run(
+                ["ipconfig"],
+                capture_output=True,
+                timeout=5,
+                creationflags=0x08000000,
+            ).stdout.decode("utf-8", errors="ignore")
+            for line in out.splitlines():
+                m = re.search(r"IPv4.*?:\s*(\d{1,3}(?:\.\d{1,3}){3})", line)
+                if m and not m.group(1).startswith("169.254."):
+                    ips.add(m.group(1))
+        except (OSError, subprocess.SubprocessError):
+            pass
     return sorted(ips)
 
 

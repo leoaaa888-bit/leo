@@ -506,16 +506,19 @@ def api_screenshot(device_serial: Optional[str] = Query(None)):
 async def api_secure_key(
     key: str = Body(..., embed=True),
     device_serial: Optional[str] = Body(None, embed=True),
+    strategy_hint: Optional[str] = Body(None, embed=True),
 ):
     """Secure Input：往一块因 FLAG_SECURE 黑屏的数字密码界面发一个键
     （0-9 / del / enter）。锁屏、Secret Album、微信/支付宝应用锁、银行 App
-    等所有黑屏数字键盘场景通用，走同一个接口。key 走请求体，不进 URL 日志。"""
+    等所有黑屏数字键盘场景通用，走同一个接口。key 走请求体，不进 URL 日志。
+    strategy_hint="keyevent"：调用方已经用别的信号（/api/wake 的 locked 字段）
+    确认过这就是锁屏，跳过探测链直接发 KeyEvent，见 scrcpy.py 的 send_key。"""
     serial = device_serial
     if serial is None:
         with session_lock:
             if active_session is not None:
                 serial = active_session.device_serial
-    state = await asyncio.to_thread(send_key, key, serial)
+    state = await asyncio.to_thread(send_key, key, serial, strategy_hint)
     return JSONResponse(state)
 
 
@@ -918,6 +921,12 @@ def main():
         help="enable HTTPS (auto-install cryptography and generate LAN certificate if needed)",
     )
     parser.add_argument(
+        "--https_port",
+        type=int,
+        default=None,
+        help="additionally serve HTTPS on this port (same app/device) while --port stays plain HTTP",
+    )
+    parser.add_argument(
         "--ssl_certfile",
         default=None,
         help="custom TLS certificate PEM (optional; with --https uses auto-generated cert when omitted)",
@@ -956,7 +965,7 @@ def main():
     try:
         ssl_certfile, ssl_keyfile, local_ips, tls_domains = resolve_ssl_paths(
             BASE_DIR,
-            use_https=args.https,
+            use_https=args.https or bool(args.https_port),
             ssl_certfile=args.ssl_certfile,
             ssl_keyfile=args.ssl_keyfile,
             tls_domains=args.tls_domain,
@@ -968,7 +977,12 @@ def main():
     except Exception as e:
         raise SystemExit(f"HTTPS setup failed: {e}") from e
 
-    scheme = "https" if ssl_certfile and ssl_keyfile else "http"
+    dual_https = bool(args.https_port and ssl_certfile and ssl_keyfile)
+    scheme = "https" if ssl_certfile and ssl_keyfile and not dual_https else "http"
+    if dual_https:
+        for ip in local_ips:
+            if ip != "127.0.0.1":
+                print(f"  HTTPS:  https://{ip}:{args.https_port}")
     print(
         f"Starting web-scrcpy on {scheme}://{args.host}:{args.port} "
         f"(adb local_port={local_port}, auto_lock={'on' if auto_lock_on_leave else 'off'}, "
@@ -989,6 +1003,30 @@ def main():
         if not lan_urls:
             print("  LAN:    (no IPv4 detected — use your machine IP manually)")
         print("  Safari/iOS: HTTPS enables better audio (AudioWorklet). Accept the cert warning once.")
+
+    if dual_https:
+        # One process, two listeners: plain HTTP on --port (phone / Windows Chrome) and
+        # HTTPS on --https_port (Mac Safari notifications need a secure context).
+        async def _serve_both():
+            http_server = uvicorn.Server(
+                uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
+            )
+            https_server = uvicorn.Server(
+                uvicorn.Config(
+                    app,
+                    host=args.host,
+                    port=args.https_port,
+                    log_level="info",
+                    ssl_certfile=ssl_certfile,
+                    ssl_keyfile=ssl_keyfile,
+                    lifespan="off",  # startup tasks already run via the HTTP server
+                )
+            )
+            https_server.install_signal_handlers = lambda: None
+            await asyncio.gather(http_server.serve(), https_server.serve())
+
+        asyncio.run(_serve_both())
+        return
 
     uvicorn.run(
         app,

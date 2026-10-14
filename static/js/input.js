@@ -19,6 +19,21 @@ class ScrcpyInput {
         'NumpadDecimal',
     ]);
 
+    // Ctrl/Cmd + 字母 这类文本编辑快捷键：字母键本身不在 FUNCTION_KEY_CODES 里
+    // （普通字母走的是"文本输入"那条路，见 bindKeyboardInputEvents 里的 input
+    // 事件），但浏览器不会为这类组合键触发文本插入事件，所以原来完全没有
+    // 转发通路——按了跟没按一样。这里单独列一个小白名单，只覆盖安卓输入框
+    // 原生认识的几个文本编辑动作，不是把所有 Ctrl/Cmd+字母都转发过去
+    // （比如 Cmd+R/T/W 这类浏览器自身的标签页操作，转发到手机上也没有对应
+    // 意义，还会让用户在本机用不了这几个快捷键，所以不拦截）。
+    static TEXT_EDIT_KEY_CODES = {
+        KeyA: 29,  // 全选
+        KeyC: 31,  // 复制
+        KeyV: 50,  // 粘贴
+        KeyX: 52,  // 剪切
+        KeyZ: 54,  // 撤销
+    };
+
     constructor(callback, videoElement, width, height, options = {}) {
         this.callback = callback;
         this.videoElement = videoElement;
@@ -262,36 +277,7 @@ class ScrcpyInput {
             this.syncKeyboardInputToDevice();
         });
 
-        input.addEventListener('keydown', (event) => {
-            if (!this.keyboardMappingEnabled) {
-                return;
-            }
-            if (event.isComposing || event.keyCode === 229) {
-                return;
-            }
-
-            const androidKey = this.mapToAndroidKeyCode(event);
-            if (androidKey != null && ScrcpyInput.FUNCTION_KEY_CODES.has(event.code)) {
-                this.sendKeyCode(event, 0, androidKey);
-                this._pressedKeys.add(androidKey);
-                event.preventDefault();
-                return;
-            }
-
-            if (event.key === 'Enter') {
-                this.sendKeyCode(event, 0, 66);
-                this.sendKeyCode(event, 1, 66);
-                event.preventDefault();
-            } else if (event.key === 'Backspace') {
-                event.preventDefault();
-                this.sendKeyCode(event, 0, 67);
-                this.sendKeyCode(event, 1, 67);
-                if (this.keyboardInputLastValue.length > 0) {
-                    this.keyboardInputLastValue = this.keyboardInputLastValue.slice(0, -1);
-                    input.value = this.keyboardInputLastValue;
-                }
-            }
-        });
+        input.addEventListener('keydown', (event) => this._handleKeyDown(event));
 
         input.addEventListener('keyup', (event) => {
             if (!this.keyboardMappingEnabled || event.isComposing) {
@@ -313,6 +299,59 @@ class ScrcpyInput {
         });
     }
 
+    // 抽成独立方法：隐藏输入框已经聚焦时的正常 keydown、以及 document 捕获阶段
+    // 抢焦点时"顺手把这次按键也处理掉"（见 bindDocumentKeyboardEvents），
+    // 现在共用同一份逻辑，不用维护两份重复代码。
+    _handleKeyDown(event) {
+        if (!this.keyboardMappingEnabled) {
+            return;
+        }
+        if (event.isComposing || event.keyCode === 229) {
+            return;
+        }
+
+        const input = this.keyboardInputElement;
+        const androidKey = this.mapToAndroidKeyCode(event);
+        if (androidKey != null && ScrcpyInput.FUNCTION_KEY_CODES.has(event.code)) {
+            this.sendKeyCode(event, 0, androidKey);
+            this._pressedKeys.add(androidKey);
+            event.preventDefault();
+            return;
+        }
+
+        // Ctrl/Cmd + A/C/V/X/Z：字母键平时走"文本输入"那条路，但浏览器不会为
+        // 这类组合键触发文本插入事件，原来完全没有转发通路。Mac 上按的是 Cmd
+        // （metaKey），安卓这边约定俗成认的是 Ctrl，所以不管原始按的是 Ctrl
+        // 还是 Cmd，统一按 Ctrl+字母 发送——语义上都是"全选/复制/粘贴/剪切/
+        // 撤销"，翻译过去才是对的，原样透传 Meta 键安卓那边大概率根本不认。
+        const textEditKey = ScrcpyInput.TEXT_EDIT_KEY_CODES[event.code];
+        if (textEditKey != null && (event.ctrlKey || event.metaKey)) {
+            const forcedCtrlEvent = {
+                shiftKey: event.shiftKey, ctrlKey: true, altKey: event.altKey, metaKey: false,
+                repeat: event.repeat,
+                getModifierState: (name) => (event.getModifierState ? event.getModifierState(name) : false),
+            };
+            this.sendKeyCode(forcedCtrlEvent, 0, textEditKey);
+            this._pressedKeys.add(textEditKey);
+            event.preventDefault();
+            return;
+        }
+
+        if (event.key === 'Enter') {
+            this.sendKeyCode(event, 0, 66);
+            this.sendKeyCode(event, 1, 66);
+            event.preventDefault();
+        } else if (event.key === 'Backspace') {
+            event.preventDefault();
+            this.sendKeyCode(event, 0, 67);
+            this.sendKeyCode(event, 1, 67);
+            if (input && this.keyboardInputLastValue.length > 0) {
+                this.keyboardInputLastValue = this.keyboardInputLastValue.slice(0, -1);
+                input.value = this.keyboardInputLastValue;
+            }
+        }
+    }
+
     bindDocumentKeyboardEvents() {
         this._onDocumentKeyDown = (event) => {
             if (!this.keyboardMappingEnabled || !this.keyboardInputElement) {
@@ -324,7 +363,16 @@ class ScrcpyInput {
             if (['Shift', 'Control', 'Alt', 'Meta'].includes(event.key)) {
                 return;
             }
+            // 点了别的地方（工具栏/诊断面板等）导致隐藏输入框失焦时，原来这里
+            // 只是把焦点抢回来，这一下按键本身就丢了——用户得再按一次才有
+            // 反应，很容易被误以为"键盘没反应"。现在抢焦点之后，只要真的抢
+            // 成功了（不是被 activateKeyboardInput 里那道"页面自己的输入框
+            // 不能抢"的保护挡回去），就把这次按键也照常处理一遍，不再白丢。
             this.activateKeyboardInput();
+            if (document.activeElement !== this.keyboardInputElement) {
+                return;
+            }
+            this._handleKeyDown(event);
         };
         document.addEventListener('keydown', this._onDocumentKeyDown, true);
     }
